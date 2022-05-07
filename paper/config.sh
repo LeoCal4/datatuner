@@ -7,8 +7,6 @@ LDC2017_DATA_LOCATION=~/Downloads/abstract_meaning_representation_amr_2.0
 # Download it from https://nlds.soe.ucsc.edu/viggo"
 VIGGO_DATA_LOCATION=~/Downloads/viggo-v1/
 
-python=~/miniconda3/envs/finetune/bin/python
-
 LM_MODELS_DIR=~/trained_lms
 CLASSIFIER_MODELS_DIR=~/trained_classifiers
 REPO_FOLDER=datatuner

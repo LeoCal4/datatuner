@@ -53,8 +53,8 @@ assert_dir_exists() {
 confirm_external_dependencies
 
 # Check that the LDC2017T10 and ViGGO datasets have been manually downloaded and placed in the correct locations.
-assert_dir_exists $LDC2017_DATA_LOCATION "The folder $LDC2017_DATA_LOCATION should contain the LDC2017T10 dataset. Download it from https://catalog.ldc.upenn.edu/LDC2017T10"
-newline
+# assert_dir_exists $LDC2017_DATA_LOCATION "The folder $LDC2017_DATA_LOCATION should contain the LDC2017T10 dataset. Download it from https://catalog.ldc.upenn.edu/LDC2017T10"
+# newline
 assert_dir_exists $VIGGO_DATA_LOCATION "The folder $VIGGO_DATA_LOCATION should contain the ViGGO dataset. Download it from https://nlds.soe.ucsc.edu/viggo"
 newline
 
@@ -88,19 +88,19 @@ newline
 MAIN_DIR=`pwd`
 #############################################################################################
 
-echo "Processing LDC2017T10 dataset"
+# echo "Processing LDC2017T10 dataset"
 
-echo "Getting the repository for data preprocessing"
-clone_repo_commit https://github.com/UKPLab/emnlp2019-dualgraph.git 0c58fb7f3ad3b9da3b92b2d2841558807fc79fd0 $TMP_DATA_FOLDER/emnlp2019-dualgraph
+# echo "Getting the repository for data preprocessing"
+# clone_repo_commit https://github.com/UKPLab/emnlp2019-dualgraph.git 0c58fb7f3ad3b9da3b92b2d2841558807fc79fd0 $TMP_DATA_FOLDER/emnlp2019-dualgraph
 
-echo "Copying the changes needed"
-cp ../src/external/ukplab_emnlp2019_dualgraph/split_amr.py $TMP_DATA_FOLDER/emnlp2019-dualgraph/process_amr/split_amr.py
-cp ../src/external/ukplab_emnlp2019_dualgraph/gen_LDC2017T10.sh $TMP_DATA_FOLDER/emnlp2019-dualgraph/process_amr/gen_LDC2017T10.sh
-cp ../src/external/ukplab_emnlp2019_dualgraph/preproc_amr.py $TMP_DATA_FOLDER/emnlp2019-dualgraph/process_amr/preproc_amr.py
-cp ../src/external/ukplab_emnlp2019_dualgraph/preprocess_LDC2017T10.sh $TMP_DATA_FOLDER/emnlp2019-dualgraph/preprocess_LDC2017T10.sh
+# echo "Copying the changes needed"
+# cp ../src/external/ukplab_emnlp2019_dualgraph/split_amr.py $TMP_DATA_FOLDER/emnlp2019-dualgraph/process_amr/split_amr.py
+# cp ../src/external/ukplab_emnlp2019_dualgraph/gen_LDC2017T10.sh $TMP_DATA_FOLDER/emnlp2019-dualgraph/process_amr/gen_LDC2017T10.sh
+# cp ../src/external/ukplab_emnlp2019_dualgraph/preproc_amr.py $TMP_DATA_FOLDER/emnlp2019-dualgraph/process_amr/preproc_amr.py
+# cp ../src/external/ukplab_emnlp2019_dualgraph/preprocess_LDC2017T10.sh $TMP_DATA_FOLDER/emnlp2019-dualgraph/preprocess_LDC2017T10.sh
 
-echo "Running the initial preprocessing"
-bash $TMP_DATA_FOLDER/emnlp2019-dualgraph/preprocess_LDC2017T10.sh $LDC2017_DATA_LOCATION ~/
+# echo "Running the initial preprocessing"
+# bash $TMP_DATA_FOLDER/emnlp2019-dualgraph/preprocess_LDC2017T10.sh $LDC2017_DATA_LOCATION ~/
 
 #############################################################################################
 

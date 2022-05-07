@@ -13,7 +13,7 @@ mkdir -p $OUTPUT_FOLDER
 
 echo "Training the classifier and writing the trained model to $OUTPUT_FOLDER"
 
-$python -m torch.distributed.launch --nproc_per_node=$NUM_PARALLEL ../src/datatuner/classification/run_classifier.py  \
+python -m torch.distributed.launch --nproc_per_node=$NUM_PARALLEL ../src/datatuner/classification/run_classifier.py  \
 --data_dir $TRAINING_DATA_FOLDER  \
 --output_dir  $OUTPUT_FOLDER  \
 --retrain_base $TRAINING_ARGS

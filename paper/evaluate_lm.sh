@@ -20,7 +20,7 @@ echo "Chunked data outputted to the folder $CHUNKED_DATA_FOLDER"
 
 CODE_DIR=../src/datatuner/lm/
 # Split data into chunks
-$python $CODE_DIR/process_json.py split $TEST_FILE $CHUNKED_DATA_FOLDER $SPLITS
+python $CODE_DIR/process_json.py split $TEST_FILE $CHUNKED_DATA_FOLDER $SPLITS
 
 COMMON_ARGUMENTS="--model_checkpoint $MODEL  \
     --no_sample \
@@ -37,7 +37,7 @@ mkdir -p $RESULTS_FOLDER
 # Evaluate each chunk
 for ((i=0; i<=MAX_SPLITS; i++)); do
     echo "Chunk $i"
-    CUDA_VISIBLE_DEVICES=$(($i % $NUM_GPUS)) $python $CODE_DIR/evaluate.py \
+    CUDA_VISIBLE_DEVICES=$(($i % $NUM_GPUS)) python $CODE_DIR/evaluate.py \
     --filename $CHUNKED_DATA_FOLDER/chunk_$i.json \
     --out_folder ${RESULTS_FOLDER}/chunks/chunk_$i \
     --max_data $MAX_DATA \
@@ -47,11 +47,11 @@ done
 wait $pids || { echo "there were errors" >&2; rm -rf ${RESULTS_FOLDER}; exit 1; }
 
 # Combine results from all chunks
-$python $CODE_DIR/process_json.py combine $RESULTS_FOLDER $SPLITS
+python $CODE_DIR/process_json.py combine $RESULTS_FOLDER $SPLITS
 GLOBAL_MAX_DATA=$((SPLITS * MAX_DATA))
 echo "GLOBAL_MAX_DATA": $GLOBAL_MAX_DATA
 CUDA_VISIBLE_DEVICES=0
-$python $CODE_DIR/evaluate.py  \
+python $CODE_DIR/evaluate.py  \
 --filename  $TEST_FILE \
 --out_folder ${RESULTS_FOLDER} \
 --max_data $GLOBAL_MAX_DATA \

@@ -17,7 +17,7 @@ fi
 
 echo "Training the model for the dataset $DATASET and writing the trained model to $OUTPUT_FOLDER"
 
-$python -m torch.distributed.launch  --nproc_per_node=$NUM_PARALLEL ../src/datatuner/lm/train.py  \
+python -m torch.distributed.launch  --nproc_per_node=$NUM_PARALLEL ../src/datatuner/lm/train.py  \
 --retrain_base ./lm_training_args/$DATASET/${SYSTEM}_model_training_args.json  \
 --logdir $OUTPUT_FOLDER  \
 --dataset_path ../data/$DATASET \

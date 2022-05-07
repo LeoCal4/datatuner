@@ -6,7 +6,7 @@ MODEL=$2
 
 echo "Evaluating $TEST_FILE with the model in $MODEL"
 
-$python ../src/datatuner/lm/evaluate.py  \
+python ../src/datatuner/lm/evaluate.py  \
 --filename $TEST_FILE \
 --no_sample \
 --model_checkpoint $MODEL \

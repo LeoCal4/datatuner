@@ -10,7 +10,7 @@ TEXT_KEY=$5
 
 cp $TRAINING_DATA_FOLDER/labels.txt $GENERATED_DATA_FOLDER/labels.txt
 
-$python ../src/datatuner/classification/classify_generated.py generate \
+python ../src/datatuner/classification/classify_generated.py generate \
 --in_file $GENERATED_DATA_FOLDER/generated.json \
 --model_folder $MODEL_FOLDER \
 --data_key $DATA_KEY \
