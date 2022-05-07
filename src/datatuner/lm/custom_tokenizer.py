@@ -1,13 +1,14 @@
 from datatuner.lm.special_token_generator import get_custom_tags
 
+"""This seem to be quite useless now, since the only things that are different wrt to the original
+    tokenize() implementation from huggingface 2.3.0 are minor and probably not relevant anymore in new versions
+    [https://github.com/huggingface/transformers/blob/a436574bfde4f75f518a107f45f987579d813ce5/transformers/tokenization_utils.py#L634]
+    """
 
 def tokenize(self, text, **kwargs):
     """ Converts a string in a sequence of tokens (string), using the tokenizer.
-            Split in words for word-based vocabulary or sub-words for sub-word-based
-            vocabularies (BPE/SentencePieces/WordPieces).
-
-            Take care of added tokens.
-        """
+        Split in words for word-based vocabulary or sub-words for sub-word-based
+        vocabularies (BPE/SentencePieces/WordPieces), taking care of added tokens."""
 
     def split_on_token(tok, text):
         result = []
@@ -27,6 +28,7 @@ def tokenize(self, text, **kwargs):
                 result += [tok]
         return result
 
+
     def split_on_tokens(tok_list, text):
         if not text:
             return []
@@ -43,7 +45,8 @@ def tokenize(self, text, **kwargs):
                 else:
                     tokenized_text += [sub_text]
             text_list = tokenized_text
-
+        
+        #* the original methods just returns a list created with itertools.chain.from_iterable
         return sum(
             (
                 self._tokenize(token, **kwargs)
@@ -58,6 +61,8 @@ def tokenize(self, text, **kwargs):
         candidates = get_custom_tags(s)
         return [cand for cand in candidates if cand in self.added_tokens_encoder.keys()]
 
+
+    #* NOTE: the threshold below is one of the only two things that have been changed wrt the original tokenize method
     # The below becomes very slow when we scale to thousands of special tokens (e.g. many node types/predicates)
     # self.added_tokens = list(self.added_tokens_encoder.keys()) + self.all_special_tokens
 

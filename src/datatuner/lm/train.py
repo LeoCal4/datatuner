@@ -123,11 +123,14 @@ def train():
 
     args = parser.parse_args()
 
+    #* loads saved training args from file specified by retrain_base, adding them to args if not already present in the cmd ones
     if args.retrain_base:
         try:
+            # open normal json file
             logger.info(f"reading the arguments from {args.retrain_base}")
             model_training_args = json.load(open(args.retrain_base))
         except:
+            # open with mlflow
             model_training_args = load_training_args(args.retrain_base)
 
         passed_args = [x[2:] for x in sys.argv if x.startswith("--")]
@@ -140,6 +143,7 @@ def train():
                 if value:
                     args.__setattr__(key, value)
         
+        # TODO create a json file specifically for t5
         if args.use_custom_t5:
             args.model_checkpoint = "t5-base"
         
@@ -163,9 +167,8 @@ def train():
 
     logger.info(f"outputting model to {args.logdir}")
     try:
-
         def finalize():
-
+            """Renames the last checkpoint saved on the main process, does some other stuff with mlflow"""
             if args.local_rank not in [-1, 0,]:
                 # Make sure only the first process in distributed training will download model & vocab
                 torch.distributed.barrier()
@@ -193,6 +196,7 @@ def train():
                 if args.local_rank == 0:
                     torch.distributed.barrier()
 
+        #* writes training arguments in an apposite logdir file
         args.logdir.mkdir(parents=True, exist_ok=True)
         TRAINING_ARGS_FILE = args.logdir / "model_training_args.json"
         args_dict = deepcopy(vars(args))
@@ -212,17 +216,17 @@ def train():
                 # Log training arguments into a file
                 mlflow.log_artifact(TRAINING_ARGS_FILE, "training")
 
-        # The validation maximum number of items shouldn't be more than the training (used during debugging)
+        #* The validation maximum number of items shouldn't be more than the training (used during debugging)
         if args.val_max_data == 0 and args.max_data > 0:
             args.val_max_data = args.max_data
 
-        # Logging is set to INFO (resp. WARN) for main (resp. auxiliary)
+        #* Logging is set to INFO (resp. WARN) for main (resp. auxiliary)
         # process. logger.info => log main process only, logger.warning => log all processes
         logging.basicConfig(level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
         # This is a logger.warning: it will be printed by all distributed processes
         logger.warning("Running process %d", args.local_rank)
 
-        # Initialize distributed training if needed
+        #* Initialize distributed training if needed
         args.distributed = args.local_rank != -1
 
         if args.distributed:
@@ -230,28 +234,26 @@ def train():
             args.device = torch.device("cuda", args.local_rank)
             torch.distributed.init_process_group(backend="nccl", init_method="env://")
 
+        #* load the tokenization configuration for the current task
         logger.info(f"Reading the task configuration: {args.task_config}")
         copyfile(args.task_config, args.logdir / "task_config.json")
         task_config = load_task_config(args.task_config)
 
         logger.info("Prepare tokenizer, pretrained model and optimizer - add special tokens for fine-tuning")
-
-        model_directory, is_local = get_model_directory(args.model_checkpoint)
+        model_directory, _ = get_model_directory(args.model_checkpoint)
 
         model, tokenizer = load_pretrained(
             model_directory,
             model_type=args.model_type,
             smoothing=args.smoothing,
             multitask=args.multitask,
-            special_tokens_file=args.special_tokens_file,
-            task_config=task_config,
-            dataset_path=args.dataset_path,
             use_custom_t5=args.use_custom_t5,
             attention_in_last_layer=args.final_attention,
             normalize_lm_output=args.normalize_lm_output,
             normalize_attention_sum=args.normalize_attention_sum,
         )
 
+        #* add special tokens and resize the token embeddings consequently
         special_tokens = read_special_tokens(
             task_config=task_config,
             special_tokens_file=args.special_tokens_file,
@@ -259,11 +261,11 @@ def train():
         )
         logger.info(f"adding {len(special_tokens)}")
         tokenizer.add_tokens(special_tokens)
-
         model.resize_token_embeddings(len(tokenizer))
 
         model.to(args.device)
 
+        #* freeze the transformer's weights
         if args.freeze:
             transformer = list(model.children())[0]
             i = 0
@@ -272,7 +274,8 @@ def train():
                 i += 1
                 if i >= len(list(transformer.parameters())) // 2:
                     break
-
+        
+        #* choose the optimizer
         if args.optimizer.lower() == "rmsprop":
             optimizer = RMSprop(model.parameters(), lr=args.lr)
         elif args.optimizer.lower() == "adam":
@@ -286,12 +289,11 @@ def train():
         else:
             optimizer = AdamW(model.parameters(), lr=args.lr)
 
-        # Prepare model for FP16 and distributed training if needed (order is important, distributed should be the last)
+        #* Prepare model for FP16 and distributed training if needed (order is important, distributed should be the last)
         if args.fp16:
             from apex import amp  # Apex is only required if we use fp16 training
 
             model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16)
-
         if args.distributed:
             model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)#, find_unused_parameters=True)
 
