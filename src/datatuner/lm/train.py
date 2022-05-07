@@ -11,7 +11,7 @@ from shutil import copyfile, rmtree
 
 import mlflow
 import torch
-from datatuner.lm.data_loader import MODEL_INPUTS, get_data_loaders
+from datatuner.lm.data_loader import MODEL_INPUTS, MASKED_OUTPUT, get_data_loaders
 from datatuner.lm.model_loader import get_model_directory, load_pretrained, load_training_args, read_special_tokens
 from datatuner.lm.novograd import Novograd
 from datatuner.lm.utils import average_distributed_scalar, load_task_config
@@ -81,6 +81,10 @@ def train():
     parser.add_argument("--ul", action="store_true", help="If true use unlikelihood sampling")
     parser.add_argument("--freeze", action="store_true", help="If true freeze layers")
     parser.add_argument("--smoothing", type=float, default=0.0, help="label smoothing epsilon")
+    parser.add_argument("--use_custom_t5", action="store_true", help="If a custom version of the T5 model with attention on LM head needs to be used")
+    parser.add_argument("--final_attention", action="store_true", help="If attention needs to be used on the LM head")
+    parser.add_argument("--normalize_lm_output", action="store_true", help="If GPT2 output needs to be normalized")
+    parser.add_argument("--normalize_attention_sum", action="store_true", help="If the sum of GPT's output and its attention in the LM head needs to be normalized using LayerNorm")
     parser.add_argument("--ignore_cache", action="store_true", help="If true ignore the dataset cache")
     parser.add_argument(
         "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)"
@@ -135,7 +139,12 @@ def train():
             if key not in passed_args:
                 if value:
                     args.__setattr__(key, value)
+        
+        if args.use_custom_t5:
+            args.model_checkpoint = "t5-base"
+        
         logger.info(vars(args))
+
 
     if args.logdir is None:
         args.logdir = Path(f"runs/{get_curr_time()}")
@@ -237,6 +246,10 @@ def train():
             special_tokens_file=args.special_tokens_file,
             task_config=task_config,
             dataset_path=args.dataset_path,
+            use_custom_t5=args.use_custom_t5,
+            attention_in_last_layer=args.final_attention,
+            normalize_lm_output=args.normalize_lm_output,
+            normalize_attention_sum=args.normalize_attention_sum,
         )
 
         special_tokens = read_special_tokens(
@@ -280,7 +293,7 @@ def train():
             model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16)
 
         if args.distributed:
-            model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+            model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)#, find_unused_parameters=True)
 
         logger.info("Prepare datasets")
         train_loader, val_loader, train_sampler, valid_sampler = get_data_loaders(args, task_config, tokenizer)
@@ -293,7 +306,8 @@ def train():
             # The components in the batch are ordered as in MODEL_INPUTS
             i = 0
             for input_name in MODEL_INPUTS:
-
+                if (args.use_custom_t5 or "t5" in args.model_type) and input_name == "token_type_ids":
+                    continue
                 if not with_labels and "labels" in input_name:
                     continue
 
@@ -405,7 +419,7 @@ def train():
         RunningAverage(output_transform=lambda x: x).attach(trainer, "loss")
         if args.multitask:
             metrics = {
-                "nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-1), output_transform=lambda x: (x[0][0], x[1][0])),
+                "nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=MASKED_OUTPUT), output_transform=lambda x: (x[0][0], x[1][0])),
                 "accuracy": Accuracy(output_transform=lambda x: (x[0][1], x[1][1])),
             }
             metrics.update(
@@ -415,7 +429,7 @@ def train():
                 }
             )
         else:
-            metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-1, reduction="mean"))}
+            metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=MASKED_OUTPUT, reduction="mean"))}
             metrics.update({"average_nll": MetricsLambda(average_distributed_scalar, metrics["nll"], args)})
 
         metrics["average_ppl"] = MetricsLambda(math.exp, metrics["average_nll"])

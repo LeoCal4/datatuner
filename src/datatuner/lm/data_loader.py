@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from collections import defaultdict
+from re import M
 
 import torch
 from datatuner.lm.converters import converters
@@ -84,7 +85,7 @@ def build_input_from_segments(
     instance["token_type_ids"] = token_types
 
     if mask_lm_labels:
-        instance["lm_labels"] = [-1] * len(instance["input_ids"])
+        instance["lm_labels"] = [MASKED_OUTPUT] * len(instance["input_ids"])
     else:
         instance["lm_labels"] = lm_labels
 
@@ -113,8 +114,14 @@ def pad_dataset(dataset, padding=0):
 
 def get_data_loaders(args, task_config, tokenizer):
     """ Prepare the dataset for training and evaluation """
+    global MASKED_OUTPUT
     datasets_raw = {}
     logger.info("Loading training data")
+
+    if args.use_custom_t5 or "t5" in args.model_type:
+        MODEL_INPUTS.remove("token_type_ids")
+        PADDED_INPUTS.remove("token_type_ids")
+        MASKED_OUTPUT = -100
 
     if args.local_rank not in [-1, 0]:
         # Make sure only the first process in distributed training will download model & vocab
@@ -171,6 +178,9 @@ def get_data_loaders(args, task_config, tokenizer):
                     instance["mc_token_ids"] = len(instance["input_ids"]) - 1
 
                 for input_name, input_array in instance.items():
+                    if args.use_custom_t5 or "t5" in args.model_type:
+                            if input_name == "token_type_ids" or input_name == "position_ids":
+                                continue
                     datasets[dataset_name][input_name].append(input_array)
 
             datasets[dataset_name]["n_candidates"] = num_candidates
@@ -186,7 +196,7 @@ def get_data_loaders(args, task_config, tokenizer):
         for input_name in MODEL_INPUTS:
             if input_name in dataset:
                 tensor = torch.tensor(dataset[input_name])
-                if input_name != "mc_labels":
+                if input_name != "mc_labels" and not args.use_custom_t5:
                     # adjust the shape as we might have more than one candidate in the case of DoubleHeads
                     try:
                         tensor = tensor.view((-1, datasets[dataset_name]["n_candidates"]) + tensor.shape[1:])

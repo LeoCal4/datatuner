@@ -1,10 +1,11 @@
 import json
 import logging
 from pathlib import Path
+from pyexpat import model
 
 import mlflow
 from datatuner.lm import custom_tokenizer
-from datatuner.lm.custom_gpt2 import custom_gpt2_with_smoothing
+from datatuner.lm.custom_gpt2 import custom_gpt2_with_smoothing, custom_gpt2_with_agumented_attention, custom_t5_with_agumented_attention
 from datatuner.lm.data_loader import PAD_TOKEN
 from transformers import (
     GPT2DoubleHeadsModel,
@@ -13,8 +14,17 @@ from transformers import (
     OpenAIGPTDoubleHeadsModel,
     OpenAIGPTLMHeadModel,
     OpenAIGPTTokenizer,
-    GPT2_PRETRAINED_MODEL_ARCHIVE_MAP,
 )
+try:
+    from transformers import T5Tokenizer
+except:
+    pass
+try:
+    from transformers import GPT2_PRETRAINED_MODEL_ARCHIVE_MAP
+except ImportError:
+    from transformers.models.gpt2.modeling_gpt2 import GPT2_PRETRAINED_MODEL_ARCHIVE_LIST
+    GPT2_PRETRAINED_MODEL_ARCHIVE_MAP = GPT2_PRETRAINED_MODEL_ARCHIVE_LIST
+
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 logger = logging.getLogger(__file__)
@@ -22,10 +32,16 @@ logger = logging.getLogger(__file__)
 
 def load_pretrained_tokenizer(model_checkpoint, model_type):
     """Load pretrained tokenizer"""
-
     tokenizer_class = OpenAIGPTTokenizer if "openai-gpt" in model_type else GPT2Tokenizer
+    if "openai-gpt" in model_type:
+        tokenizer_class = OpenAIGPTTokenizer
+    elif "gpt2" in model_type:
+        tokenizer_class = GPT2Tokenizer
+    elif "t5" in model_type:
+        tokenizer_class = T5Tokenizer
     tokenizer = tokenizer_class.from_pretrained(model_checkpoint)
-    PreTrainedTokenizer.tokenize = custom_tokenizer.tokenize
+    if "t5" not in model_type:
+        PreTrainedTokenizer.tokenize = custom_tokenizer.tokenize
     return tokenizer
 
 
@@ -43,7 +59,9 @@ def get_model_directory(model_checkpoint=None):
     is_local = True
     if Path(model_checkpoint).exists():
         return Path(model_checkpoint), is_local
-    elif model_checkpoint in GPT2_PRETRAINED_MODEL_ARCHIVE_MAP.keys():
+    elif (type(GPT2_PRETRAINED_MODEL_ARCHIVE_MAP) is dict and model_checkpoint in GPT2_PRETRAINED_MODEL_ARCHIVE_MAP.keys()) or \
+        (type(GPT2_PRETRAINED_MODEL_ARCHIVE_MAP) is list and model_checkpoint in GPT2_PRETRAINED_MODEL_ARCHIVE_MAP) or \
+            model_checkpoint == "t5-base": # TODO horrible
         is_local = False
         return model_checkpoint, is_local
     else:
@@ -91,6 +109,12 @@ def load_pretrained(
         special_tokens_file=None,
         task_config=None,
         dataset_path=None,
+        use_custom_t5=False,
+        attention_in_last_layer=False,
+        mask_attention_in_last_layer=False,
+        sum_attention_to_output=False,
+        normalize_lm_output=False,
+        normalize_attention_sum=False,
         **kwargs,
 ):
     """Load pretrained model"""
@@ -115,7 +139,15 @@ def load_pretrained(
 
     if smoothing > 0:
         model_class = custom_gpt2_with_smoothing(smoothing=smoothing)
-
+    elif attention_in_last_layer:
+        model_class = custom_gpt2_with_agumented_attention(
+            normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum,
+            )
+    elif use_custom_t5:
+        model_class = custom_t5_with_agumented_attention( 
+            normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum,
+            )
+        model_type = "t5-base"
     elif "gpt2" in model_type:
         if multitask:
             model_class = GPT2DoubleHeadsModel
