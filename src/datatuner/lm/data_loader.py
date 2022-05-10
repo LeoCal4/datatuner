@@ -2,7 +2,6 @@ import json
 import logging
 import os
 from collections import defaultdict
-from re import M
 
 import torch
 from datatuner.lm.converters import converters
@@ -127,15 +126,22 @@ def get_inputs(item, device, tokenizer, task_config):
     return input_ids, token_type_ids
 
 
-def pad_dataset(dataset, padding=0):
+def pad_dataset(dataset, padding=0, pad_validation_left=False):
     """Pad the dataset. This could be optimized by defining a
     Dataset class and padd only batches but this is simpler. """
     max_l = max(len(x) for x in dataset["input_ids"])
     for name in PADDED_INPUTS:
         if name in dataset:
-            dataset[name] = [
-                x + [padding if name != "lm_labels" else MASKED_OUTPUT] * (max_l - len(x)) for x in dataset[name]
-            ]
+            padding_token = [padding if name != "lm_labels" else MASKED_OUTPUT]
+            if name == "validation" and pad_validation_left:
+                dataset[name] = [
+                    padding_token * (max_l - len(x)) + x for x in dataset[name]
+                ]
+            else:
+                dataset[name] = [
+                    x + padding_token * (max_l - len(x)) for x in dataset[name]
+                ]
+
     return dataset
 
 
@@ -222,7 +228,7 @@ def get_data_loaders(args, task_config, tokenizer):
     logger.info("Pad inputs and convert to Tensor")
     tensor_datasets = {"train": [], "validation": []}
     for dataset_name, dataset in datasets.items():
-        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(PAD_TOKEN))
+        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(PAD_TOKEN), pad_validation_left=args.use_custom_t5)
         for input_name in MODEL_INPUTS:
             if input_name in dataset:
                 tensor = torch.tensor(dataset[input_name])
