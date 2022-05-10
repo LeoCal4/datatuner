@@ -143,26 +143,30 @@ def custom_gpt2_with_agumented_attention(
 # def custom_t5_with_agumented_attention():
     # pass
 def custom_t5_with_agumented_attention(
-    num_final_heads: int = 16, normalize_lm_output: bool = False, normalize_attention_sum: bool = False, device="cuda",
+    attention_in_last_layer=False, num_final_heads: int = 16, normalize_lm_output: bool = False, normalize_attention_sum: bool = False, 
+    device="cuda",
     ):
     class T5ForConditionalGenerationCustom(T5ForConditionalGeneration):
         def __init__(self, config):
             super().__init__(config)
             self.transpose_input = False
-            try:
-                self.final_attention = MultiheadAttention(config.d_model, num_final_heads, batch_first=True)
-            # TypeError: __init__() got an unexpected keyword argument 'batch_first'
-            except TypeError as e:
-                print(e)
-                # this is added in case the pytorch version is too old and does not support batch_first
-                # the code to handle this case is taken from (forward method): 
-                # https://pytorch.org/docs/1.10/_modules/torch/nn/modules/activation.html#MultiheadAttention.forward
-                self.transpose_input = True
-                self.final_attention = MultiheadAttention(config.d_model, num_final_heads)
+            if attention_in_last_layer:
+                try:
+                    self.final_attention = MultiheadAttention(config.d_model, num_final_heads, batch_first=True)
+                # TypeError: __init__() got an unexpected keyword argument 'batch_first'
+                except TypeError as e:
+                    print(e)
+                    # this is added in case the pytorch version is too old and does not support batch_first
+                    # the code to handle this case is taken from (forward method): 
+                    # https://pytorch.org/docs/1.10/_modules/torch/nn/modules/activation.html#MultiheadAttention.forward
+                    self.transpose_input = True
+                    self.final_attention = MultiheadAttention(config.d_model, num_final_heads)
+                #* this makes sense only with final attention
+                if normalize_attention_sum:
+                    self.attention_sum_norm = LayerNorm(config.d_model)
             if normalize_lm_output:
                 self.t5_output_norm = LayerNorm(config.d_model)
-            if normalize_attention_sum:
-                self.attention_sum_norm = LayerNorm(config.d_model)
+
 
 
         def forward(
@@ -187,10 +191,6 @@ def custom_t5_with_agumented_attention(
             """Taken from:
             https://github.com/huggingface/transformers/blob/v4.18.0/src/transformers/models/t5/modeling_t5.py#L1539
             """
-            # print("=================")
-            # print(f"input_ids: {input_ids.size()}")
-            # print(f"labels: {labels.size()}")
-
             use_cache = use_cache if use_cache is not None else self.config.use_cache
             return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -199,11 +199,6 @@ def custom_t5_with_agumented_attention(
                 if self.config.num_layers == self.config.num_decoder_layers:
                     # warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
                     decoder_head_mask = head_mask
-
-            # if input_ids.shape[1] == 1:
-            #     input_ids = torch.squeeze(input_ids)
-            # if labels.shape[1] == 1:
-            #     labels = torch.squeeze(labels)
 
             # Encode if needed (training, first prediction pass)
             if encoder_outputs is None:
@@ -225,7 +220,6 @@ def custom_t5_with_agumented_attention(
                 )
 
             hidden_states = encoder_outputs[0]
-            # print(f"encoder_outputs hidden_states: {hidden_states.size()}")
 
             if self.model_parallel:
                 torch.cuda.set_device(self.decoder.first_device)
@@ -233,9 +227,6 @@ def custom_t5_with_agumented_attention(
             if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
                 # get decoder inputs from shifting lm labels to the right
                 decoder_input_ids = self._shift_right(labels)
-            # print("===================")
-            # print(f"decoder_input_ids: {decoder_input_ids.size()}")
-            # print("===================")
 
             # Set device for model parallelism
             if self.model_parallel:
@@ -277,16 +268,13 @@ def custom_t5_with_agumented_attention(
                 # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
                 sequence_output = sequence_output * (self.model_dim**-0.5)
 
+            if attention_in_last_layer:
+                try:
+                    final_attention_mask = Transformer.generate_square_subsequent_mask(sequence_output.shape[-2]).to(device)
+                except TypeError: # TypeError: generate_square_subsequent_mask() missing 1 required positional argument: 'sz'
+                    sz = sequence_output.shape[-2]
+                    final_attention_mask = torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1).to(device)
 
-            # print(f"sequence_output shape: {sequence_output.shape}")
-            try:
-                final_attention_mask = Transformer.generate_square_subsequent_mask(sequence_output.shape[-2]).to(device)
-            except TypeError: # TypeError: generate_square_subsequent_mask() missing 1 required positional argument: 'sz'
-                sz = sequence_output.shape[-2]
-                final_attention_mask = torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1).to(device)
-
-            # print("final_attention_mask.shape: ", final_attention_mask.shape)
-            # print("sequence_output.shape before transpose: ", sequence_output.shape)
             if self.transpose_input:
                 # print("transposing seq output")
                 sequence_output = sequence_output.transpose(1, 0)
@@ -295,33 +283,25 @@ def custom_t5_with_agumented_attention(
                 # print("normalizing t5 output")
                 sequence_output = self.t5_output_norm(sequence_output)
 
-            # print("========================================================")
-            # print("final_attention_mask.shape: ", final_attention_mask.shape)
-            # print("hidden_states.shape after transpose: ", hidden_states.shape)
-            # print("========================================================")
-            final_attention_output, _ = self.final_attention(
-                sequence_output, sequence_output, sequence_output, attn_mask=final_attention_mask
-            )
+            if attention_in_last_layer:
+                final_attention_output, _ = self.final_attention(
+                    sequence_output, sequence_output, sequence_output, attn_mask=final_attention_mask
+                )
 
             if self.transpose_input:
-                # print("transposing input")
                 # restore hidden states to original state
                 sequence_output = sequence_output.transpose(1, 0)
                 # transpose attention output
                 final_attention_output = final_attention_output.transpose(1, 0)
-            # print(f"Final attention output shape: {final_attention_output.shape}")
             
-            # print(f"==== SIZES PRE SUM: hidden {sequence_output.shape} - attn {final_attention_output.shape}")
-            final_attention_output = torch.add(sequence_output, final_attention_output)
-            # print(f"SIZE AFTER SUM: {final_attention_output.shape}")
+            lm_head_output = sequence_output
+            if attention_in_last_layer:
+                lm_head_output = torch.add(sequence_output, final_attention_output)
             
             if normalize_attention_sum:
-                final_attention_output = self.attention_sum_norm(final_attention_output)
-                # print(f"final attn after attn sum: {final_attention_output.shape}")
+                lm_head_output = self.attention_sum_norm(final_attention_output)
 
-            lm_logits = self.lm_head(final_attention_output)
-            # print(f"lm_logits: {lm_logits.size()}")
-            # print("========================================")
+            lm_logits = self.lm_head(lm_head_output)
 
             loss = None
             if labels is not None:

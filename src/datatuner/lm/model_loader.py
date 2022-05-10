@@ -149,13 +149,13 @@ def load_pretrained(
     #* choose the model class
     if smoothing > 0:
         model_class = custom_gpt2_with_smoothing(smoothing=smoothing)
-    elif attention_in_last_layer:
+    elif not use_custom_t5 and attention_in_last_layer:
         model_class = custom_gpt2_with_agumented_attention(
             normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum, device=device,
             )
     elif use_custom_t5:
         model_class = custom_t5_with_agumented_attention( 
-            normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum, device=device,
+            attention_in_last_layer=attention_in_last_layer, normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum, device=device,
             )
     elif "gpt2" in model_type:
         if multitask:
