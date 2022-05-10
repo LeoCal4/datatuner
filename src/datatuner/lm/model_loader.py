@@ -122,6 +122,7 @@ def load_pretrained(
         attention_in_last_layer=False,
         normalize_lm_output=False,
         normalize_attention_sum=False,
+        device="cuda",
         **kwargs,
 ):
     """Load pretrained model and relative tokenizer"""
@@ -150,11 +151,11 @@ def load_pretrained(
         model_class = custom_gpt2_with_smoothing(smoothing=smoothing)
     elif attention_in_last_layer:
         model_class = custom_gpt2_with_agumented_attention(
-            normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum,
+            normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum, device=device,
             )
     elif use_custom_t5:
         model_class = custom_t5_with_agumented_attention( 
-            normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum,
+            normalize_lm_output=normalize_lm_output, normalize_attention_sum=normalize_attention_sum, device=device,
             )
     elif "gpt2" in model_type:
         if multitask:

@@ -145,7 +145,7 @@ def train():
         
         # TODO create a json file specifically for t5
         if args.use_custom_t5:
-            args.model_checkpoint = "t5-base"
+            args.model_checkpoint = "t5-small"
         
         logger.info(vars(args))
 
@@ -251,6 +251,7 @@ def train():
             attention_in_last_layer=args.final_attention,
             normalize_lm_output=args.normalize_lm_output,
             normalize_attention_sum=args.normalize_attention_sum,
+            device=args.device,
         )
 
         #* add special tokens and resize the token embeddings consequently
@@ -292,7 +293,6 @@ def train():
         #* Prepare model for FP16 and distributed training if needed (order is important, distributed should be the last)
         if args.fp16:
             from apex import amp  # Apex is only required if we use fp16 training
-
             model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16)
         if args.distributed:
             model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)#, find_unused_parameters=True)
@@ -355,25 +355,44 @@ def train():
 
         trainer = Engine(update)
 
-        # Evaluation function and evaluator (evaluator output is the input of the metrics)
+        #* Evaluation function and evaluator (evaluator output is the input of the metrics)
         def inference(engine, batch):
             model.eval()
             with torch.no_grad():
                 n_batch = named_batch(tuple(input_tensor.to(args.device) for input_tensor in batch))
-                outputs = model(**{key: n_batch[key] for key in n_batch if "labels" not in key})
-                lm_logits = outputs[0]
-                lm_labels = n_batch["lm_labels"] if args.multitask else n_batch["labels"]
-
-                lm_logits_flat_shifted = lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
-                lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
-
-                if args.multitask:
-                    mc_logits = outputs[1]
-                    mc_labels = n_batch["mc_labels"]
-
-                    return (lm_logits_flat_shifted, mc_logits), (lm_labels_flat_shifted, mc_labels)
+                #* passing everything in the inputs except for the labels
+                gen_kwargs = {key: n_batch[key] for key in n_batch if "labels" not in key}
+                if args.use_custom_t5:
+                    target_sequence_len = n_batch["labels"].size(-1)
+                    gen_kwargs["min_length"] = target_sequence_len
+                    gen_kwargs["max_length"] = target_sequence_len
+                    gen_kwargs["return_dict_in_generate"] = True
+                    gen_kwargs["output_scores"] = True
+                    if args.device == "cpu" or args.local_rank == -1:
+                        outputs = model.generate(**gen_kwargs)
+                    else:
+                        outputs = model.module.generate(**gen_kwargs)
                 else:
+                    outputs = model(**gen_kwargs)
+                lm_logits = outputs[1]
+                lm_labels = n_batch["lm_labels"] if args.multitask else n_batch["labels"]
+                if not args.use_custom_t5: # input for non-t5 models have the useless second dimension
+                    lm_logits_flat_shifted = lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
+                    lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
                     return lm_logits_flat_shifted, lm_labels_flat_shifted
+                else:
+                    lm_logits = torch.stack(lm_logits)
+                    lm_logits = torch.squeeze(lm_logits, -2)
+                    lm_logits = lm_logits.contiguous().view(-1, lm_logits.size(-1))
+                    lm_labels = lm_labels[..., 1:].contiguous().view(-1)
+                    return lm_logits, lm_labels
+
+                # if args.multitask:
+                #     mc_logits = outputs[1]
+                #     mc_labels = n_batch["mc_labels"]
+                #     return (lm_logits_flat_shifted, mc_logits), (lm_labels_flat_shifted, mc_labels)
+                # else:
+                #     return lm_logits_flat_shifted, lm_labels_flat_shifted
 
         evaluator = Engine(inference)
 
@@ -388,7 +407,7 @@ def train():
             val_ppl = engine.state.metrics["average_ppl"]
             return -val_ppl
 
-        # Attach evaluation to trainer: we evaluate when we start the training and at the end of each epoch
+        #* Attach evaluation to trainer: we evaluate when we start the training and at the end of each epoch
         trainer.add_event_handler(Events.EPOCH_COMPLETED, lambda _: evaluator.run(val_loader))
         if args.n_epochs < 1:
             trainer.add_event_handler(Events.COMPLETED, lambda _: evaluator.run(val_loader))
@@ -431,7 +450,7 @@ def train():
                 }
             )
         else:
-            metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=MASKED_OUTPUT, reduction="mean"))}
+            metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="mean"))} # TODO avoid using -100 directly 
             metrics.update({"average_nll": MetricsLambda(average_distributed_scalar, metrics["nll"], args)})
 
         metrics["average_ppl"] = MetricsLambda(math.exp, metrics["average_nll"])
@@ -445,6 +464,9 @@ def train():
         if args.local_rank in [-1, 0]:
             pbar = ProgressBar(persist=True)
             pbar.attach(trainer, metric_names=["loss"])
+            val_pbar = ProgressBar(persist=True)
+            val_pbar.attach(evaluator, metric_names=["nll"])
+
             evaluator.add_event_handler(
                 Events.COMPLETED, lambda _: pbar.log_message("Validation: %s" % pformat(evaluator.state.metrics))
             )

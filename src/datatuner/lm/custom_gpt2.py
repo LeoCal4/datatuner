@@ -47,7 +47,7 @@ def custom_gpt2_with_smoothing(smoothing=0.0):
 
 
 def custom_gpt2_with_agumented_attention(
-    num_heads: int = 16, normalize_lm_output: bool = False, normalize_attention_sum: bool = False,
+    num_heads: int = 16, normalize_lm_output: bool = False, normalize_attention_sum: bool = False, device="cuda",
     ):
     class GPT2LMHeadModelCustom(GPT2LMHeadModel):
         def __init__(self, config):
@@ -87,12 +87,13 @@ def custom_gpt2_with_agumented_attention(
 
             hidden_states = torch.squeeze(hidden_states, 1)
             # print(f"Transformer hidden states post-squeeze: {hidden_states.shape}")
-
+            
+            # TODO optimization: calculate the hidden_state shape in init (if possible) and create the mask there
             try:
-                final_attention_mask = Transformer.generate_square_subsequent_mask(hidden_states.shape[-2]).to("cuda")
+                final_attention_mask = Transformer.generate_square_subsequent_mask(hidden_states.shape[-2]).to(device)
             except TypeError: # TypeError: generate_square_subsequent_mask() missing 1 required positional argument: 'sz'
                 sz = hidden_states.shape[-2]
-                final_attention_mask = torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1).to("cuda")
+                final_attention_mask = torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1).to(device)
 
             # print("final_attention_mask.shape: ", final_attention_mask.shape)
             # print("hidden_states.shape before transpose: ", hidden_states.shape)
@@ -142,7 +143,7 @@ def custom_gpt2_with_agumented_attention(
 # def custom_t5_with_agumented_attention():
     # pass
 def custom_t5_with_agumented_attention(
-    num_final_heads: int = 16, normalize_lm_output: bool = False, normalize_attention_sum: bool = False,
+    num_final_heads: int = 16, normalize_lm_output: bool = False, normalize_attention_sum: bool = False, device="cuda",
     ):
     class T5ForConditionalGenerationCustom(T5ForConditionalGeneration):
         def __init__(self, config):
@@ -181,9 +182,11 @@ def custom_t5_with_agumented_attention(
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+            return_dict: Optional[bool] = False,
         ):
-
+            """Taken from:
+            https://github.com/huggingface/transformers/blob/v4.18.0/src/transformers/models/t5/modeling_t5.py#L1539
+            """
             # print("=================")
             # print(f"input_ids: {input_ids.size()}")
             # print(f"labels: {labels.size()}")
@@ -277,10 +280,10 @@ def custom_t5_with_agumented_attention(
 
             # print(f"sequence_output shape: {sequence_output.shape}")
             try:
-                final_attention_mask = Transformer.generate_square_subsequent_mask(sequence_output.shape[-2]).to("cuda")
+                final_attention_mask = Transformer.generate_square_subsequent_mask(sequence_output.shape[-2]).to(device)
             except TypeError: # TypeError: generate_square_subsequent_mask() missing 1 required positional argument: 'sz'
                 sz = sequence_output.shape[-2]
-                final_attention_mask = torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1).to("cuda")
+                final_attention_mask = torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1).to(device)
 
             # print("final_attention_mask.shape: ", final_attention_mask.shape)
             # print("sequence_output.shape before transpose: ", sequence_output.shape)
@@ -315,43 +318,30 @@ def custom_t5_with_agumented_attention(
             if normalize_attention_sum:
                 final_attention_output = self.attention_sum_norm(final_attention_output)
                 # print(f"final attn after attn sum: {final_attention_output.shape}")
-            # final_attention_output = torch.unsqueeze(final_attention_output, 1) # ? serve?
 
             lm_logits = self.lm_head(final_attention_output)
             # print(f"lm_logits: {lm_logits.size()}")
             # print("========================================")
 
-
             loss = None
             if labels is not None:
-                loss_fct = CrossEntropyLoss(ignore_index=MASKED_OUTPUT)
+                loss_fct = CrossEntropyLoss(ignore_index=-100) # TODO pass the right one
                 loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
 
-            # if not return_dict:
-            # output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
-            # return ((loss,) + output) if loss is not None else output
-            print("=====================================")
-            print(f"max lm_logits: {max(lm_logits)}")
-            print("=====================================")
-            return (loss,)
+            if not return_dict:
+                output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
+                return ((loss,) + output) if loss is not None else output
 
-            # # print(f"loss: {loss}")
-            # print(f"labels: {labels.size()}")
-            # print("========================================")
+            return Seq2SeqLMOutput(
+                loss=loss,
+                logits=lm_logits,
+                past_key_values=decoder_outputs.past_key_values,
+                decoder_hidden_states=decoder_outputs.hidden_states,
+                decoder_attentions=decoder_outputs.attentions,
+                cross_attentions=decoder_outputs.cross_attentions,
+                encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+                encoder_hidden_states=encoder_outputs.hidden_states,
+                encoder_attentions=encoder_outputs.attentions,
+            )
 
-            # to_return = Seq2SeqLMOutput(
-            #     loss=loss,
-            #     logits=lm_logits,
-            #     past_key_values=decoder_outputs.past_key_values,
-            #     decoder_hidden_states=decoder_outputs.hidden_states,
-            #     decoder_attentions=decoder_outputs.attentions,
-            #     cross_attentions=decoder_outputs.cross_attentions,
-            #     encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            #     encoder_hidden_states=encoder_outputs.hidden_states,
-            #     encoder_attentions=encoder_outputs.attentions,
-            # )
-            # print("========================================")
-            # print(f"to_return: {to_return}")
-            # print("========================================")
-            # return to_return
     return T5ForConditionalGenerationCustom
