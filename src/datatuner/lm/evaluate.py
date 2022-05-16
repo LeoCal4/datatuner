@@ -288,6 +288,7 @@ def sample_sequence(
 
         # To do batch decoding at each beam step, we map from the index in the beam to the index in the model outputs
         # (complete components are not included)
+        #? what the fuck are these fucking hardcoded indices aaaaaaaaaaaa
         beam_map = {}
         all_input_ids = None
         all_token_type_ids = None
@@ -612,11 +613,11 @@ def process_one_item(
         while i < len(full_data_shape):
             current_data_item = full_data_shape[i]
             key = current_data_item["id"]
-            # If this is a field we learnt, we do not load. We break the loop and generate it
+            #* if this is a field we learnt (aka any last field, the sentence ones), we do not load. We break the loop and generate it
             if current_data_item["learn"] is True and current_data_item["type"] == "text":
                 # Here we generate any field that is learnt
                 try:
-                    next_stop_token = full_data_shape[i + 1]["id"]
+                    next_stop_token = full_data_shape[i + 1]["id"] #? this probably never happens since it's always the last field
                 except:
                     next_stop_token = "<eos>"
 
@@ -638,9 +639,9 @@ def process_one_item(
                         tokenizer,
                         model,
                         args,
-                        current_task_config,
-                        key,
-                        next_stop_token,
+                        current_task_config, # at this point current_task_config has <data> DATA <text>
+                        key,                 # this is the out_name and it is always the name of the text field
+                        next_stop_token,     # always <eos>
                         avoided_cache,
                         prev_beam=prev_beam,
                         reranker=reranker,

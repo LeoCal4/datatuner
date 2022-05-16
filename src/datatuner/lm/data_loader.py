@@ -49,7 +49,8 @@ def build_input_from_segments(
         candidate_val=None, # the actual sentence 
         max_block_size=None,
 ):
-    """Builds the complete input of the model for a given data point.
+    """Builds the complete input of the model for a given data point, iterating on the task_config fields.
+    This expedient is used so that during evaluation the text part can be avoided.
 
     Args:
         data_point (dict): processed data point, tokenized and "id-ized" 
