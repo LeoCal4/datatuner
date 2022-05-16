@@ -1,3 +1,4 @@
+from copy import deepcopy
 import logging
 import datetime
 import argparse
@@ -139,6 +140,8 @@ def main():
     epoch = 0
     step = 0 # number of total examples we have done (will be epoch * len(data_set) at end of each epoch)
     last_avg_bleu = 0
+    best_predictions = []
+    best_model_state_dict = None
     while epoch < args.epochs:
         epoch += 1
         #* train
@@ -165,8 +168,8 @@ def main():
 
         #* evaluate
         log.info(f'Evaluating at step {step}...')
-        intermediate_predictions = []   
-        bleus = []                  
+        intermediate_predictions = []
+        bleus = []
         num_val = len(val_loader.dataset)
         model.eval()
         with torch.no_grad(), tqdm(total=num_val) as progress_bar:
@@ -217,31 +220,45 @@ def main():
 
                 #* log info
                 progress_bar.update(batch_size)
-                # progress_bar.set_postfix(NLL=loss_meter.avg)
+        #* compute the average BLEU score
         current_avg_bleu = sum(bleus)/float(len(bleus))
         log.info(f"\nAverage BLEU at end of epoch {epoch}: {current_avg_bleu:.3f}")
+        #* check if the model got worse and stop training in that case
         if current_avg_bleu < last_avg_bleu:
             log.info(f"Stopping training (prev bleu {last_avg_bleu} > curr bleu {current_avg_bleu})")
             break
+        #* save the new avg BLUE, predictions and model, since this model is necessarily better
+        log.info("Current version of the model is better than the previous ones, saving...")
         last_avg_bleu = current_avg_bleu
+        best_predictions = intermediate_predictions
+        # state_dict is deepcopied since otherwise it would get updated with the model training
+        best_model_state_dict = deepcopy(model.state_dict())
+    
 
-    #* save predictions for qualititative analysis
+    #* create a directory in the save_dir folder called <dataset_name>_<timestamp>
+    dataset_name = args.base_dataset_path.split(os.sep)[-1]
+    # model_dir_name = f"{dataset_name}_{int(datetime.datetime.now().timestamp())}"
+    # full_dir_path = os.path.join(args.save_dir_path, f"{model_dir_name}")
+    log.info(f"Training complete, saving predictions and model at {args.save_dir_path}")
+    os.makedirs(args.save_dir_path, exist_ok=True)
+    #* save predictions
     to_write = ""
-    for prediction_pair in intermediate_predictions:
+    for prediction_pair in best_predictions:
         data, source, generated = prediction_pair
         to_write += f"DATA: {data}\nOG: {source}\nGEN: {generated}\n\n"
-    dataset_name = args.base_dataset_path.split("/")[-1]
-    with open(f"predictions_{dataset_name}_{datetime.datetime.now().timestamp()}.txt", "w") as f:
+    with open(os.path.join(args.save_dir_path, "predictions.txt"), "w") as f:
         f.write(to_write)
-
-    # util.save_preds(pred_list_all, record_dir)
-    # util.save_preds(pred_list_correct, record_dir, file_name="preds_correct.csv")
-    # results_list = [('exact_match_with_eos', total_matches_with_eos_ct),
-    #                 ('exact_match_no_eos', total_matches_no_eos_ct)]
-    # results = OrderedDict(results_list)
-    # Log to console
-    # results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in results.items())
-    # log.info(f'Dev {results_str}')
+    #* save training/model stats
+    with open(os.path.join(args.save_dir_path, "stats.txt"), "w") as f:
+        f.write(f"Training ended at epoch {epoch}\nLoss {loss_val:.5f}\nAvg final BLEU: {last_avg_bleu:.5f}")
+    #* save model
+    torch.save({
+        "epoch": epoch,
+        "model_state_dict": best_model_state_dict,
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss
+    }, os.path.join(args.save_dir_path, "model_params.tar"))
+    log.info("Training complete!")
 
 
 if __name__ == '__main__':
