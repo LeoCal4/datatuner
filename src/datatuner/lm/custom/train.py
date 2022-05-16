@@ -35,7 +35,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--train_params_path", type=str, help="JSON file with training parameters.")
     parser.add_argument("--save_dir_path", type=str, default="./save", help="Path to the save directory.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
-    parser.add_argument("--model_name", type=str, default="t5-small", help="Short name of the model")
+    parser.add_argument("--model_name", type=str, default="t5-base", help="Short name of the model")
     parser.add_argument("--train_batch_size", type=int, default=8, help="Batch size for training")
     parser.add_argument("--val_batch_size", type=int, default=8, help="Batch size for validation")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -138,6 +138,7 @@ def main():
     log.info("Starting training")
     epoch = 0
     step = 0 # number of total examples we have done (will be epoch * len(data_set) at end of each epoch)
+    last_avg_bleu = 0
     while epoch < args.epochs:
         epoch += 1
         #* train
@@ -179,48 +180,68 @@ def main():
                 #* generate for token matches
                 source_ids = batch["source_input_ids"].to(args.device, dtype=torch.long)
                 source_mask = batch["source_attention_mask"].to(args.device, dtype=torch.long)
-                generated_ids = model.generate(source_ids, attention_mask=source_mask, max_length=200) #! hardcoded length TODO
-
-                #* collect some stats
-
+                generated_ids = model.generate(
+                    source_ids, 
+                    attention_mask=source_mask, 
+                    max_length=200,
+                    num_beams=5,
+                    early_stopping=True,
+                    num_return_sequences=5,
+                ) #! hardcoded length TODO
                 #* save for qualitative analysis
                 original_data_inputs = tokenizer.batch_decode(batch["source_input_ids"], skip_special_tokens=True)
                 original_text_targets = tokenizer.batch_decode(batch["target_input_ids"], skip_special_tokens=True)
-                outputs_decoded = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-                for source, generated in zip(original_text_targets, outputs_decoded):
-                    bleus.append(sentence_bleu([source], generated))
-                current_predictions = list(zip(original_data_inputs, original_text_targets, outputs_decoded))
+                outputs_decoded = np.array(tokenizer.batch_decode(generated_ids, skip_special_tokens=True))
+                # they are not divided into batch so we reorder them from (batch size * beam size, sequence size) to (batch, beam, sequence)
+                outputs_decoded = outputs_decoded.reshape(-1, 5)
+                best_decoded_outputs = []
+                for source, generated_beam in zip(original_text_targets, outputs_decoded):
+                    highest_bleu = 0
+                    highest_sentence_index = 0
+                    for index, generated in enumerate(generated_beam):
+                        current_bleu = sentence_bleu([source], generated)
+                        if current_bleu > highest_bleu:
+                            highest_sentence_index = index
+                            highest_bleu = current_bleu
+                    bleus.append(highest_bleu)
+                    best_decoded_outputs.append(generated_beam[highest_sentence_index])
+                current_predictions = list(zip(original_data_inputs, original_text_targets, best_decoded_outputs))
                 intermediate_predictions.extend(current_predictions)
 
                 #* print one batch of generations for qualitative assessment
                 if batch_num == 0:
-                    for _, orig_input, actual_output in current_predictions[:1]:
-                        # print(f"Source: {orig_input}\n\tActual: {actual_output}")
-                        log.info(f"\nSource: {orig_input}\n"
-                                 f"\t Actual: {actual_output}")
+                    for data, orig_input, actual_output in current_predictions[:1]:
+                        log.info(f"\nData: {data}\n"
+                                f"\nSource: {orig_input}\n"
+                                f"\tGenerated: {actual_output}")
 
                 #* log info
                 progress_bar.update(batch_size)
                 # progress_bar.set_postfix(NLL=loss_meter.avg)
-            log.info(f"\nAverage BLEU at end of epoch {epoch}: {sum(bleus)/float(len(bleus)):.3f}")
+        current_avg_bleu = sum(bleus)/float(len(bleus))
+        log.info(f"\nAverage BLEU at end of epoch {epoch}: {current_avg_bleu:.3f}")
+        if current_avg_bleu < last_avg_bleu:
+            log.info(f"Stopping training (prev bleu {last_avg_bleu} > curr bleu {current_avg_bleu})")
+            break
+        last_avg_bleu = current_avg_bleu
 
-        #* save predictions for qualititative analysis
-        to_write = ""
-        for prediction_pair in intermediate_predictions:
-            data, source, generated = prediction_pair
-            to_write += f"DATA: {data}\nOG: {source}\nGEN: {generated}\n\n"
-        dataset_name = args.base_dataset_path.split("/")[-1]
-        with open(f"predictions_{dataset_name}_{datetime.datetime.now().timestamp()}.txt", "w") as f:
-            f.write(to_write)
+    #* save predictions for qualititative analysis
+    to_write = ""
+    for prediction_pair in intermediate_predictions:
+        data, source, generated = prediction_pair
+        to_write += f"DATA: {data}\nOG: {source}\nGEN: {generated}\n\n"
+    dataset_name = args.base_dataset_path.split("/")[-1]
+    with open(f"predictions_{dataset_name}_{datetime.datetime.now().timestamp()}.txt", "w") as f:
+        f.write(to_write)
 
-        # util.save_preds(pred_list_all, record_dir)
-        # util.save_preds(pred_list_correct, record_dir, file_name="preds_correct.csv")
-        # results_list = [('exact_match_with_eos', total_matches_with_eos_ct),
-        #                 ('exact_match_no_eos', total_matches_no_eos_ct)]
-        # results = OrderedDict(results_list)
-        # Log to console
-        # results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in results.items())
-        # log.info(f'Dev {results_str}')
+    # util.save_preds(pred_list_all, record_dir)
+    # util.save_preds(pred_list_correct, record_dir, file_name="preds_correct.csv")
+    # results_list = [('exact_match_with_eos', total_matches_with_eos_ct),
+    #                 ('exact_match_no_eos', total_matches_no_eos_ct)]
+    # results = OrderedDict(results_list)
+    # Log to console
+    # results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in results.items())
+    # log.info(f'Dev {results_str}')
 
 
 if __name__ == '__main__':

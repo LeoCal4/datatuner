@@ -4,7 +4,7 @@ import json
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
-from transformers import T5Tokenizer, GPT2Tokenizer
+from transformers import T5Tokenizer
 
 
 def get_raw_dataset(filename: str, task_config: Dict) -> List[Dict]:
@@ -71,7 +71,8 @@ class DatatunerDataset(Dataset):
             max_source_len: int = None, max_target_len: int = None) -> None:
         self.raw_dataset = raw_dataset
         self.tokenizer = tokenizer
-        self.is_validation = is_validation
+        self.is_validation = True
+        # self.is_validation = is_validation
         self.data_special_token = data_special_token
         self.text_special_token = text_special_token
         self.max_source_len = max_source_len
@@ -83,16 +84,21 @@ class DatatunerDataset(Dataset):
 
     def apply_tokenizer_to_raw_dataset(self):
         """Builds the input for the model, normally processing the source (tokenization + conversion to id + padding)
-            and building the labels as such:
+            and building the target as such:
             - tokenization
-            - pad to the left to match the len of the related source
-            - pad to the right together with the source
+            - pad the text to the left to match the len of the related source
+                - SOURCE: <data> DATA <text> TEXT
+                - TARGET:  PAD   PAD   PAD   TEXT
+              where DATA, TEXT and PAD possibly represent more than one token. 
+            - pad normally to the right together with the source
+        In case the dataset is used for validation/testing, the TEXT part is omitted from the source.
         """
         total_data = []
         total_targets = []
         for entry in self.raw_dataset:
             if not self.is_validation:
-                #* build and tokenize the source string (data token + data + text token + text)
+                self.tokenizer.padding_size = "right"
+                #* build and tokenize the source string (data token + data + text token + text) ([-1] is needed to take the correct sentence)
                 source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}> {entry['text'][-1]}"
                 source_string = self.tokenizer(source_string)["input_ids"]
                 total_data.append(source_string)
@@ -103,13 +109,16 @@ class DatatunerDataset(Dataset):
                     self.tokenizer.pad_token_id for _ in range(len(source_string) - len(only_text_tokens))
                     ] + only_text_tokens
                 total_targets.append(target_string)
-            else:
+            else: #* during validation we want to avoid adding the text part of the input, the rest is the same
+                # these tokenizer settings are taken from https://huggingface.co/docs/transformers/v4.18.0/en/model_doc/t5#inference
+                # self.tokenizer.padding_size = "left"
+                # self.tokenizer.padding_token = self.tokenizer.eos_token
                 #* build and tokenize the complete source string (data token + data + text token + text)
                 complete_source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}> {entry['text'][-1]}"
                 complete_source_string = self.tokenizer(complete_source_string)["input_ids"]
                 #* build and tokenize the validation source string (data token + data + text token)
                 val_source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}>"
-                val_source_string = self.tokenizer(val_source_string)["input_ids"]
+                val_source_string = self.tokenizer(val_source_string)["input_ids"][:-1] #! <- this leaves out the EOS token
                 #* manually pad the source string on the right to make it the same size of the complete source text
                 val_source_string = val_source_string + [
                     self.tokenizer.pad_token_id for _ in range(len(complete_source_string) - len(val_source_string))
@@ -122,13 +131,14 @@ class DatatunerDataset(Dataset):
                     self.tokenizer.pad_token_id for _ in range(len(complete_source_string) - len(only_text_tokens))
                     ] + only_text_tokens
                 total_targets.append(target_string)
+
         #* finish using batch_encode_plus, since __call__ does not accept input_ids
         self.processed_sources = self.tokenizer.batch_encode_plus(
             total_data, padding=self.source_padding_strategy, return_tensors="pt", is_split_into_words=True, truncation=True, 
             max_length=self.max_source_len
         )
         #* pad labels to the same len of the source 
-        #! change the pad token to the mask one?
+        #! change the pad token to the mask one? LET'S TO THIS N rip
         target_len = len(self.processed_sources["input_ids"][0])
         self.processed_targets = self.tokenizer.batch_encode_plus(
             total_targets, padding="max_length", max_length=target_len, return_tensors="pt", is_split_into_words=True
