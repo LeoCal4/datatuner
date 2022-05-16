@@ -11,7 +11,7 @@ from shutil import copyfile, rmtree
 
 import mlflow
 import torch
-from datatuner.lm.data_loader import MODEL_INPUTS, MASKED_OUTPUT, get_data_loaders
+from datatuner.lm.data_loader import get_model_inputs, MASKED_OUTPUT, get_data_loaders
 from datatuner.lm.model_loader import get_model_directory, load_pretrained, load_training_args, read_special_tokens
 from datatuner.lm.novograd import Novograd
 from datatuner.lm.utils import average_distributed_scalar, load_task_config
@@ -54,7 +54,7 @@ def train():
     parser.add_argument(
         "--model_checkpoint", type=str, default="distilgpt2", help="Path, url or short name of the model"
     )
-    parser.add_argument("--model_type", type=str, default=None, help="gpt or gpt2")
+    parser.add_argument("--model_type", type=str, default=None, help="gpt, gpt2 or t5")
     parser.add_argument("--train_batch_size", type=int, default=4, help="Batch size for training")
     parser.add_argument("--valid_batch_size", type=int, default=1, help="Batch size for validation")
     parser.add_argument(
@@ -143,9 +143,9 @@ def train():
                 if value:
                     args.__setattr__(key, value)
         
-        # TODO create a json file specifically for t5
-        if args.use_custom_t5:
-            args.model_checkpoint = "t5-small"
+        # # TODO create a json file specifically for t5
+        # if args.use_custom_t5:
+        #     args.model_checkpoint = "t5-small"
         
         logger.info(vars(args))
 
@@ -307,7 +307,7 @@ def train():
             named_batch = {}
             # The components in the batch are ordered as in MODEL_INPUTS
             i = 0
-            for input_name in MODEL_INPUTS:
+            for input_name in get_model_inputs(args.model_checkpoint):
                 if (args.use_custom_t5 or "t5" in args.model_type) and input_name == "token_type_ids":
                     continue
                 if not with_labels and "labels" in input_name:
@@ -384,7 +384,11 @@ def train():
                     lm_logits = torch.stack(lm_logits)
                     lm_logits = torch.squeeze(lm_logits, -2)
                     lm_logits = lm_logits.contiguous().view(-1, lm_logits.size(-1))
+                    # print("================================")
+                    # print(tokenizer.decode(lm_labels[0], skip_special_tokens=True))
                     lm_labels = lm_labels[..., 1:].contiguous().view(-1)
+                    # print(tokenizer.decode(outputs[0][0], skip_special_tokens=True))
+                    # print("================================")
                     return lm_logits, lm_labels
 
                 # if args.multitask:

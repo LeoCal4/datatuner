@@ -66,6 +66,8 @@ def custom_gpt2_with_agumented_attention(
                 self.gpt2_output_norm = LayerNorm(config.n_embd)
             if normalize_attention_sum:
                 self.attention_sum_norm = LayerNorm(config.n_embd)
+            if config.decoder_start_token_id is None:
+                config.decoder_start_token_id = config.pad_token_id 
 
         def forward(
             self,

@@ -2,6 +2,8 @@ import json
 import logging
 import os
 from collections import defaultdict
+from pyexpat import model
+from typing import List
 
 import torch
 from datatuner.lm.converters import converters
@@ -11,11 +13,32 @@ from tqdm import tqdm
 logger = logging.getLogger(__file__)
 
 PAD_TOKEN = "<pad>"
-MODEL_INPUTS = ["input_ids", "mc_token_ids", "lm_labels", "mc_labels", "token_type_ids"]
-PADDED_INPUTS = ["input_ids", "lm_labels", "token_type_ids"]
+GPT2_MODEL_INPUTS = ["input_ids", "mc_token_ids", "lm_labels", "mc_labels", "token_type_ids"]
+T5_MODEL_INPUTS = ["input_ids", "lm_labels", "attention_mask"]
+GPT2_PADDED_INPUTS = ["input_ids", "lm_labels", "token_type_ids"]
+T5_PADDED_INPUTS = ["input_ids", "lm_labels"]
 
 MASKED_OUTPUT = -1
 
+
+def get_model_inputs(model_type: str) -> List[str]:
+    model_type = str(model_type)
+    if "gpt2" in model_type:
+        return GPT2_MODEL_INPUTS
+    elif "t5" in model_type:
+        return T5_MODEL_INPUTS
+    else:
+        raise ValueError(f"Model type/checkpoint {model_type} is not valid.")
+
+
+def get_padded_inputs(model_type: str) -> List[str]:
+    model_type = str(model_type)
+    if "gpt2" in model_type:
+        return GPT2_PADDED_INPUTS
+    elif "t5" in model_type:
+        return T5_PADDED_INPUTS
+    else:
+        raise ValueError(f"Model type/checkpoint {model_type} is not valid.")
 
 def build_input_from_segments(
         data_point,
@@ -126,22 +149,36 @@ def get_inputs(item, device, tokenizer, task_config):
     return input_ids, token_type_ids
 
 
-def pad_dataset(dataset, padding=0, pad_validation_left=False):
+def pad_dataset(dataset, inputs_to_pad, padding=0, pad_validation_left=False, create_attention_mask=False):
     """Pad the dataset. This could be optimized by defining a
-    Dataset class and padd only batches but this is simpler. """
-    max_l = max(len(x) for x in dataset["input_ids"])
-    for name in PADDED_INPUTS:
-        if name in dataset:
-            padding_token = [padding if name != "lm_labels" else MASKED_OUTPUT]
-            if name == "validation" and pad_validation_left:
-                dataset[name] = [
-                    padding_token * (max_l - len(x)) + x for x in dataset[name]
-                ]
-            else:
-                dataset[name] = [
-                    x + padding_token * (max_l - len(x)) for x in dataset[name]
-                ]
+    Dataset class and padd only batches but this is simpler. (<- I hate you)
 
+    Use the create_attention_mask flag to add the attention_mask field too (this is terrible)"""
+    max_l = max(len(x) for x in dataset["input_ids"])
+    if create_attention_mask:
+        dataset["attention_mask"] = []
+    for name in inputs_to_pad:
+        if name not in dataset:
+            continue
+        padding_token = [padding if name != "lm_labels" else MASKED_OUTPUT]
+        new_dataset_current_list = []
+        for entry in dataset[name]:
+            if name == "validation" and pad_validation_left:
+                padding_first_part = padding_token * (max_l - len(entry))
+                padding_second_part = entry
+                if create_attention_mask and name == "input_ids":
+                    attn_mask_first_part = [0] * (max_l - len(entry))
+                    attn_mask_second_part = [1] * len(entry)
+            else:
+                padding_first_part = entry
+                padding_second_part = padding_token * (max_l - len(entry)) 
+                if create_attention_mask and name == "input_ids":
+                    attn_mask_first_part = [1] * len(entry)
+                    attn_mask_second_part = [0] * (max_l - len(entry)) 
+            if create_attention_mask and name == "input_ids":
+                dataset["attention_mask"].append(attn_mask_first_part + attn_mask_second_part)
+            new_dataset_current_list.append(padding_first_part + padding_second_part)
+        dataset[name] = new_dataset_current_list
     return dataset
 
 
@@ -150,10 +187,8 @@ def get_data_loaders(args, task_config, tokenizer):
     global MASKED_OUTPUT
     logger.info("Loading training data")
 
-    #* remove token_type_ides from inputs if using t5, as does it not need them, and set mask value to -100
+    #* set mask value to -100
     if args.use_custom_t5 or "t5" in args.model_type:
-        MODEL_INPUTS.remove("token_type_ids")
-        PADDED_INPUTS.remove("token_type_ids")
         MASKED_OUTPUT = -100
 
     #* Make sure only the first process in distributed training will download model & vocab
@@ -226,10 +261,14 @@ def get_data_loaders(args, task_config, tokenizer):
                 datasets[dataset_name]["mc_labels"].append(num_candidates - 1)
 
     logger.info("Pad inputs and convert to Tensor")
+    # logger.info(f"{args}")
     tensor_datasets = {"train": [], "validation": []}
     for dataset_name, dataset in datasets.items():
-        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(PAD_TOKEN), pad_validation_left=args.use_custom_t5)
-        for input_name in MODEL_INPUTS:
+        dataset = pad_dataset(
+            dataset, get_padded_inputs(args.model_checkpoint), padding=tokenizer.convert_tokens_to_ids(PAD_TOKEN), 
+            pad_validation_left=False, create_attention_mask=args.use_custom_t5) #! revert pad_validation_left value
+        model_inputs = get_model_inputs(args.model_checkpoint)
+        for input_name in model_inputs:
             if input_name in dataset:
                 tensor = torch.tensor(dataset[input_name])
                 if input_name != "mc_labels" and not args.use_custom_t5: # TODO fix the shape
@@ -273,7 +312,7 @@ def get_dataset_from_file(tokenizer, filename, task_config, max_data, max_block_
     """
 
     def tokenize(obj):
-        """If obj is a string, tokenized it and convert the tokens to ids.
+        """If obj is a string, tokenize it and convert the tokens to ids.
         If obj is a dict or an iterable, recursively call this method on each string composing them.
 
         Args:
