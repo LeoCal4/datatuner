@@ -77,7 +77,8 @@ class DatatunerDataset(Dataset):
         self.text_special_token = text_special_token
         self.max_source_len = max_source_len
         self.source_padding_strategy = "max_length" if self.max_source_len else "longest"
-        self.max_target_len = max_target_len #! unused for now
+        self.max_target_len = max_target_len
+        self.target_padding_strategy = "max_length" if self.max_target_len else "longest"
         self.processed_sources = []
         self.processed_targets = []
         self.apply_tokenizer_to_raw_dataset()
@@ -92,8 +93,10 @@ class DatatunerDataset(Dataset):
               where DATA, TEXT and PAD possibly represent more than one token. 
             - pad normally to the right together with the source
         In case the dataset is used for validation/testing, the TEXT part is omitted from the source.
+        
+        Since T5 is an encoder/decoder model, the source will contain just the DATA and the targets will contain the TEXT.
         """
-        total_data = []
+        total_sources = []
         total_targets = []
         for entry in self.raw_dataset:
             if not self.is_validation:
@@ -101,7 +104,7 @@ class DatatunerDataset(Dataset):
                 #* build and tokenize the source string (data token + data + text token + text) ([-1] is needed to take the correct sentence)
                 source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}> {entry['text'][-1]}"
                 source_string = self.tokenizer(source_string)["input_ids"]
-                total_data.append(source_string)
+                total_sources.append(source_string)
                 #* tokenize the text part for the target
                 only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"]
                 #* manually pad the target string on the left to make it the same size of the source text
@@ -109,39 +112,21 @@ class DatatunerDataset(Dataset):
                     self.tokenizer.pad_token_id for _ in range(len(source_string) - len(only_text_tokens))
                     ] + only_text_tokens
                 total_targets.append(target_string)
-            else: #* during validation we want to avoid adding the text part of the input, the rest is the same
+            else:
                 # these tokenizer settings are taken from https://huggingface.co/docs/transformers/v4.18.0/en/model_doc/t5#inference
                 # self.tokenizer.padding_size = "left"
-                # self.tokenizer.padding_token = self.tokenizer.eos_token
-                #* build and tokenize the complete source string (data token + data + text token + text)
-                complete_source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}> {entry['text'][-1]}"
-                complete_source_string = self.tokenizer(complete_source_string)["input_ids"]
-                #* build and tokenize the validation source string (data token + data + text token)
-                val_source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}>"
-                val_source_string = self.tokenizer(val_source_string)["input_ids"][:-1] #! <- this leaves out the EOS token
-                #* manually pad the source string on the right to make it the same size of the complete source text
-                val_source_string = val_source_string + [
-                    self.tokenizer.pad_token_id for _ in range(len(complete_source_string) - len(val_source_string))
-                    ] # TODO NEED TO UPDATE ATTENTION MASKS TOO
-                total_data.append(val_source_string)
-                #* tokenize the text part for the target
-                only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"]
-                #* manually pad the target string on the left to make it the same size of the source text
-                target_string = [
-                    self.tokenizer.pad_token_id for _ in range(len(complete_source_string) - len(only_text_tokens))
-                    ] + only_text_tokens
+                # self.tokenizer.padding_token = self.tokenizer.eos_token                
+                source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}>" #? text special token probably useless
+                total_sources.append(source_string)
+                target_string = entry['text'][-1]
                 total_targets.append(target_string)
-
-        #* finish using batch_encode_plus, since __call__ does not accept input_ids
-        self.processed_sources = self.tokenizer.batch_encode_plus(
-            total_data, padding=self.source_padding_strategy, return_tensors="pt", is_split_into_words=True, truncation=True, 
-            max_length=self.max_source_len
+        self.processed_sources = self.tokenizer(
+            total_sources, padding=self.source_padding_strategy, max_length=self.max_source_len,
+            return_tensors="pt", truncation=True
         )
-        #* pad labels to the same len of the source 
-        #! change the pad token to the mask one? LET'S TO THIS N rip
-        target_len = len(self.processed_sources["input_ids"][0])
-        self.processed_targets = self.tokenizer.batch_encode_plus(
-            total_targets, padding="max_length", max_length=target_len, return_tensors="pt", is_split_into_words=True
+        self.processed_targets = self.tokenizer(
+            total_targets, padding=self.target_padding_strategy, max_length=self.max_target_len, 
+            return_tensors="pt", truncation=True 
         )
 
     def __len__(self) -> int:
