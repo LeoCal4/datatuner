@@ -18,7 +18,7 @@ class Reranker:
             except:
                 self.task_config = None
             self.device = device
-            self.is_local = is_local
+            self.is_local = is_local #? what is this
             self.model.to(self.device)
             self.model.eval()
 
@@ -39,9 +39,9 @@ class Reranker:
         if not self.is_local:
             assert item is not None
             item = custom_deep_copy(item)
-            item.update({"answer_text": input_ids})
+            item.update({"answer_text": input_ids}) #? what is the sense of this
             input_ids, token_type_ids = get_inputs(item, self.device, self.tokenizer, self.task_config)
-            context_len = len(input_ids[0]) - len(input_ids)
+            context_len = len(input_ids[0]) - len(input_ids) #? isn't this like the the amount of tokens in a sentence - 1?
 
         else:
             if "linearized_amr" in item:
@@ -55,19 +55,30 @@ class Reranker:
             input_ids = torch.tensor(input_ids, device=self.device).unsqueeze(0)
             token_type_ids = None
 
-        return input_ids, token_type_ids, context_len
+        return input_ids, token_type_ids, context_len #? what the fuck is context_len, it's either sentence_len - 1 or 0
 
     def score(self, input_ids, item):
+        """The score is the geometric mean of the probabilities of all the "valid" tokens (in terms of 
+        counting them in the score) of a given sentence.
 
+        Args:
+            input_ids (List): item's input_ids
+            item (): current item, but it seems totally useless
+
+        Returns:
+            float
+        """
         input_ids, token_type_ids, context_len = self.create_input(input_ids, item)
-
         model_outputs = self.model(input_ids, token_type_ids=token_type_ids)
-        probs = F.softmax(model_outputs[0][0], dim=1)
+        probs = F.softmax(model_outputs[0][0], dim=1) # model_outputs[0][0] = logits
         x = []
-        for i in range(context_len, len(input_ids[0])):
+        for i in range(context_len, len(input_ids[0])): #? 1 to sentence len
+            #* take the current token id and convert it to string  
             next_token_id = input_ids[0][i].item()
             next_token_str = self.tokenizer.decode(next_token_id)
+            #* the prefix is composed of all the tokens before the current one and starting from the second
             prefix = input_ids[0][context_len:i]
+            #* get the probability of the current token in the probabilities of the logits of the previous token
             next_prob = probs[i - 1][next_token_id].item()
             if (
                     not should_ignore_in_score(prefix, self.tokenizer, next_token_str, next_token_id, next_prob)
@@ -78,6 +89,15 @@ class Reranker:
         return score
 
     def rerank(self, nbest_items, item):
+        """Reranks the best item according to the score function.
+
+        Args:
+            nbest_items (List): 
+            item (): 
+
+        Returns:
+            List: the reranked best items
+        """
         with torch.no_grad():
             scores = []
 

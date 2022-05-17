@@ -88,6 +88,20 @@ def top_filtering(probs, tokenizer, top_k=0, top_p=0.0, dec_dropout=0, threshold
 
 
 class Beam(object):
+    """A custom class representing a beam, internally using a heap to store the item (I guess).
+    This is used for beam search, in order to maintain the best sequences among the generated ones.
+    
+    An item in the beam presents the following elements:
+    - probabilty (float)
+    - complete (bool): indicates if the item is a complete sentence or not (i.e. it has reached an end/next-sentence token) 
+    - counter (int): ?
+    - payload (Dict): stores an input item data
+        - prefix
+        - item
+        - input_ids
+        - token_type_ids
+        - all_probs
+    """
     # For comparison of prefixes, the tuple starting with (prefix_probability, complete_sentence, ...) is used.
     def __init__(self, beam_width, tokenizer):
         self.heap = list()
@@ -97,23 +111,31 @@ class Beam(object):
         self.max_ratio_in_heap = 1000
 
     def add(self, prob, complete, prefix, item, input_ids, token_type_ids, all_probs):
-        # counter is used so that the heap does not have to compare tensors. The 3rd tuple element
-        # is always unique across beams
-        if DEBUG:
+        """
+        None of this shit makes any sense
 
+        Args:
+            prob ()
+            complete (bool): ??????
+            prefix (List): the sentence up to its current state of generation (probably)
+            item (_type_): the base data (probably)
+            input_ids ()
+            token_type_ids ()
+            all_probs (List): ??????
+        """
+        if DEBUG:
             decoded = self.tokenizer.decode(prefix)
             logger.debug(decoded)
             logger.debug(f"combined prob: {prob}")
             logger.debug(all_probs)
             logger.debug("\n")
-
             logger.debug("beam elements:")
             n_best_items = heapq.nlargest(len(self.heap), self.heap)
             for i in range(len(n_best_items)):
                 text = self.tokenizer.decode(n_best_items[i][3]["prefix"])
                 logger.debug(f"{n_best_items[i][0]} {text}")
-
             logger.debug("\n")
+        
         payload = {
             "prefix": prefix,
             "item": item,
@@ -121,6 +143,8 @@ class Beam(object):
             "token_type_ids": token_type_ids,
             "all_probs": all_probs,
         }
+        # counter is used so that the heap does not have to compare tensors
+        # the 3rd tuple element is always unique across beams
         heapq.heappush(self.heap, (prob, complete, self.counter, payload))
         self.counter += 1
 
@@ -132,6 +156,13 @@ class Beam(object):
         return cand
 
     def clean_beam(self, cons_classifier, cons_cache, cons_dataset):
+        """"cons" stands for consistency
+
+        Args:
+            cons_classifier (_type_): _description_
+            cons_cache (_type_): _description_
+            cons_dataset (_type_): _description_
+        """
         new_heap = []
 
         # dataset_fields
@@ -225,18 +256,42 @@ def sample_sequence(
         out_name,
         next_stop_token,
         avoided_cache,
-        filtered_words=None,
-        options=None,
         attentuation_factor=0,
         prev_beam=None,
         avoid_repeating=[],
         reranker=None,
         cons_classifier=None,
 ):
-    """Generate a sequence from the given context"""
-    # The next token after the sentence we want to predict should be a special token (e.g. </query>, <eos>, etc.).
-    # So we stop on that token.
-    # TODO: fix the hardcoded newline character
+    """Generate a sequence from the given context (if you only knew how bad things really are).
+    The generation is perpetrated using beams, which are carried out in parallel until all of them form a complete sentence.
+    The probabilities of the tokens to generate are the softmaxed-logits from the main model previous iteration's output.
+        They can be possibily expanded using:
+            - the probabilities (obtained in the same way) of the reranker model
+            - the probabilities obtained by applying an attention-like operation to the current hidden state wrt the prev ones
+
+    Args:
+        item (Dict): an item in the dataset
+        tokenizer
+        model
+        args
+        task_config
+        out_name (_type_): _description_
+        next_stop_token (_type_): _description_
+        avoided_cache (_type_): _description_
+        attentuation_factor (int, optional): _description_. Defaults to 0.
+        prev_beam (_type_, optional): _description_. Defaults to None.
+        avoid_repeating (list, optional): _description_. Defaults to [].
+        reranker (_type_, optional): _description_. Defaults to None.
+        cons_classifier (_type_, optional): _description_. Defaults to None.
+
+    Raises:
+        Exception: _description_
+
+    Returns:
+        _type_: _description_
+    """
+    #* The next token after the sentence we want to predict should be a special token (e.g. </query>, <eos>, etc.).
+    #* So we stop on that token.
     special_tokens_ids = tokenizer.convert_tokens_to_ids([next_stop_token, "<pad>"])
     item[out_name] = []
     hid_cache = None
@@ -244,12 +299,12 @@ def sample_sequence(
     # Consistency checking cache
     cons_cache = {}
 
-    # The previous beam is carried over in case we have previous tasks (such as entity tagging before query generation)
+    #* in case there isn't a prev_beam, create one using the current inputs
     if prev_beam is None:
         input_ids, token_type_ids = get_inputs(item, args.device, tokenizer, task_config)
         prev_beam = Beam(args.beam_width, tokenizer)
         prev_beam.add(1.0, False, [], custom_deep_copy(item), input_ids, token_type_ids, [])
-
+    #* The previous beam is carried over in case we have previous tasks (such as entity tagging before query generation)
     else:
         for i in range(len(prev_beam.heap)):
             prev_item = prev_beam.heap[i][3]["item"]
@@ -277,38 +332,37 @@ def sample_sequence(
                 },
             )
 
-    # Used to allow reducing repetition for tokens in `avoid_repeating`
+    #* Used to allow reducing repetition for tokens in `avoid_repeating`
     word_counts = defaultdict(lambda: 0)
-    # Used to prevent beam elements from extending beyond max length
+    #* Used to prevent beam elements from extending beyond max length
     beam_len = 0
     total_preds = 0
 
     while True:
         curr_beam = Beam(args.beam_width, tokenizer)
-
-        # To do batch decoding at each beam step, we map from the index in the beam to the index in the model outputs
+        #* To do batch decoding at each beam step, we map from the index in the beam to the index in the model outputs
         # (complete components are not included)
-        #? what the fuck are these fucking hardcoded indices aaaaaaaaaaaa
         beam_map = {}
         all_input_ids = None
         all_token_type_ids = None
-        for ind, x in enumerate(prev_beam):
+        #* iterate all the elements in the previous beam and store inputs and token type ids 
+        for beam_ind, (_, is_complete, _, payload) in enumerate(prev_beam):
             # if not complete
-            if x[1] is False:
-                beam_map[ind] = len(beam_map)
+            if is_complete is False:
+                beam_map[beam_ind] = len(beam_map)
                 if all_input_ids is None:
-                    all_input_ids = x[3]["input_ids"]
-                    all_token_type_ids = x[3]["token_type_ids"]
+                    all_input_ids = payload["input_ids"]
+                    all_token_type_ids = payload["token_type_ids"]
                 else:
-                    all_input_ids = torch.cat((all_input_ids, x[3]["input_ids"]))
-                    all_token_type_ids = torch.cat((all_token_type_ids, x[3]["token_type_ids"]))
+                    all_input_ids = torch.cat((all_input_ids, payload["input_ids"]))
+                    all_token_type_ids = torch.cat((all_token_type_ids, payload["token_type_ids"]))
 
-        # If we have model inputs to predict based on them
+        #* If we have model inputs to predict based on them
         if all_input_ids is not None:
             all_model_outputs = model(all_input_ids, token_type_ids=all_token_type_ids)
 
+        #* iterate again on the items of the previous beam
         for beam_ind, (prefix_prob, complete, _, payload) in enumerate(prev_beam):
-
             prefix, item, input_ids, token_type_ids, all_probs = (
                 payload["prefix"],
                 payload["item"],
@@ -316,8 +370,7 @@ def sample_sequence(
                 payload["token_type_ids"],
                 payload["all_probs"],
             )
-
-            # No need to do anything for complete ones
+            #* No need to do anything for complete ones, since the sentence is complete
             if complete:
                 curr_beam.add(prefix_prob, True, prefix, item, input_ids, token_type_ids, all_probs)
             else:
@@ -327,15 +380,16 @@ def sample_sequence(
                     except:
                         logger.debug(f"input_ids: {input_ids}")
 
-                # prediction_scores before softmax is all_model_outputs[0]
-                model_outputs_0 = all_model_outputs[0][beam_map[beam_ind]: beam_map[beam_ind] + 1, ]
-
+                #* prediction_scores before softmax is all_model_outputs[0]
+                model_outputs_0 = all_model_outputs[0][beam_map[beam_ind]: beam_map[beam_ind] + 1,]
                 total_preds += 1
+
                 # Higher temperature -> the softer probability distribution. Lower temperature (<1): peaked probability
                 # distribution (one dominates all)
+                #* scale model outputs (aka apply temperature) and apply softmax
                 logits = model_outputs_0[0, -1, :] / (args.temperature if args.temperature > 0 else 1)
-
                 probs = F.softmax(logits, dim=-1)
+                
                 # TODO: the reranker model compatible with the batched beam search
                 if reranker is not None and args.aux_weight > 0 and len(prefix) > 0:
                     reranker_ids, reranker_token_types, _ = reranker.create_input(prefix, item)
@@ -346,76 +400,77 @@ def sample_sequence(
                             logger.debug(f"reranker_ids: {reranker_ids}")
                     reranker_model_outputs = reranker.model(reranker_ids, token_type_ids=reranker_token_types)
                     reranker_logits = reranker_model_outputs[0][0, -1, :] / args.temperature
-
                     reranker_probs = F.softmax(reranker_logits, dim=-1)
                     reranker_prob_len = reranker_probs.shape[0]
+                    #* append the part in excess of the main probabilities to the reranked ones
                     reranker_probs = F.pad(
                         input=reranker_probs, pad=(0, probs.shape[0] - reranker_prob_len), mode="constant", value=0
                     )
                     reranker_probs[reranker_prob_len:] = probs[reranker_prob_len:]
-
+                    #* same operations to logits
                     reranker_logits = F.pad(
                         input=reranker_logits, pad=(0, probs.shape[0] - reranker_prob_len), mode="constant", value=0
                     )
                     reranker_logits[reranker_prob_len:] = logits[reranker_prob_len:]
+                    #* weighted sum of the probabilities + reranked probs
                     if args.reranking_mode == "average":
                         probs = args.aux_weight * reranker_probs + (1 - args.aux_weight) * probs
-
+                    #* max among the two probs
                     elif args.reranking_mode == "max":
                         probs = torch.max(reranker_probs, probs)
-
                     probs = top_filtering(
                         probs, tokenizer, top_k=args.top_k, top_p=args.top_p, dec_dropout=args.dec_dropout
                     )
 
+                #* compute an attention-like operation between the previous hidden states and the current one and update probs with it
                 if args.cache_pointer:
-                    # Get the hidden state corresponding to the last layer
+                    #* Get the hidden state corresponding to the last layer
                     current_hidden = all_model_outputs[2][beam_map[beam_ind]: beam_map[beam_ind] + 1, ][-1][-1][-1]
 
                     if hid_cache is None:
                         hid_cache = current_hidden.unsqueeze(0)
                         targ_cache = custom_deep_copy(probs.unsqueeze(0))
                     else:
-                        # Compute dot products between the cached hidden states (of previous predictions) and the current hidden state
+                        #* Compute dot products between the cached hidden states (of previous predictions) and the current hidden state
                         all_dot_prods = torch.mv(args.cache_theta * hid_cache, current_hidden)
-                        # Get the softmax representing the similarity between our current state and each of the previous hidden states
+                        #* Get the softmax representing the similarity between our current state and each of the previous hidden states
                         softmaxed = F.softmax(all_dot_prods, dim=-1).unsqueeze(1)
-                        # Expand softmaxed to have the shape of the targets cache. Then multiply it with the targ_cache.
+                        #* Expand softmaxed to have the shape of the targets cache. Then multiply it with the targ_cache.
                         # Doing that, each previous target distrbution will be multiplied with a factor corresponding to the similarity
                         # between the current hidden state and the corresponding previous hidden state.
-                        #
-                        # Finally, we perform the sum to combine the weighted previous target distributions.
+                        #* Finally, we perform the sum to combine the weighted previous target distributions.
                         p_cache = (softmaxed.expand_as(targ_cache) * targ_cache).sum(0).squeeze()
 
-                        # We zero the indices of very low probabilities
+                        #* We zero the indices of very low probabilities
                         indices_to_remove = p_cache < p_cache.max().item() / 2
                         p_cache[indices_to_remove] = 0
 
-                        # Compute the new target probabilities
+                        #* Compute the new target probabilities
                         aux_prob = 1 - p_cache
                         aux_prob[indices_to_remove] = 0
-                        # Normalize to sum to one
+                        #* Normalize to sum to one
                         aux_prob = aux_prob / aux_prob.sum()
                         probs = (1 - args.cache_lambda) * probs + args.cache_lambda * aux_prob
 
                         hid_cache = torch.cat((hid_cache, custom_deep_copy(current_hidden.unsqueeze(0))), dim=0)
                         targ_cache = torch.cat((targ_cache, custom_deep_copy(probs.unsqueeze(0))), dim=0)
 
-                # Used to prevent the same token from being predicted in multiple iterations at the same time step
+                #* Used to prevent the same token from being predicted in multiple iterations at the same time step
                 avoided_cache = []
 
-                # Avoid completing the beam too early
+                #* Avoid completing the beam too early
                 if beam_len < args.min_length:
                     avoided_cache.extend(special_tokens_ids)
 
-                for s in range(args.per_step_predictions):
-                    # Avoid repeating same token at same time step
+                for _ in range(args.per_step_predictions):
+                    #* Avoid repeating same token at same time step
                     probs[avoided_cache] = 0
                     if DEBUG:
                         logger.debug(f"sum_prob: {probs.sum()}")
                     if probs.sum() <= args.min_prob:
                         break
-
+                    
+                    #* get the next token and the top-10 given their probabilities
                     next_tok = torch.topk(probs, 1)[1] if args.no_sample else torch.multinomial(probs, 1)
                     topk = torch.topk(probs, 10)
                     if DEBUG:
@@ -423,27 +478,32 @@ def sample_sequence(
                             f"topk:  {list(zip(tokenizer.convert_ids_to_tokens(topk.indices.cpu().numpy()), topk.values.cpu().numpy()))}"
                         )
 
+                    #* get the probability of the next token
                     next_token_id = next_tok.item()
                     next_prob = probs[next_token_id].item()
+                    #* zero-out the probability of the current token
                     avoided_cache.append(next_token_id)
+                    #* update count of the current token
                     word_counts[next_token_id] += 1
                     next_token_str = tokenizer.convert_ids_to_tokens(next_token_id)
 
-                    # We can decrease the probability of repetition by decreasing the probability of specific tokens.
+                    #* We can decrease the probability of repetition by decreasing the probability of specific tokens.
                     if arr_part_matches_string(next_token_str, avoid_repeating):
                         next_prob = next_prob / (1 + attentuation_factor * math.log(word_counts[next_token_id]))
 
-                    # We add the last token id to the vector
+                    #* We add the last token id to the vector
                     new_input_ids = torch.cat((input_ids, next_tok.unsqueeze(0)), dim=1)
                     new_token_type_ids = torch.cat((token_type_ids, token_type_ids[:, -1:]), dim=1)
 
+                    #* stop if the probability is too low
                     if next_prob <= args.min_token_prob and len(curr_beam.heap) > 0:
                         break
-
+                    
                     if should_ignore_in_score(prefix, tokenizer, next_token_str, next_token_id, next_prob):
                         if DEBUG:
                             logger.debug(f"ignoring: {next_token_str} {next_prob}")
                         new_all_probs = all_probs
+                    #* expand probabilities with the one of the current token
                     else:
                         new_all_probs = all_probs + [next_prob]
 
@@ -452,6 +512,7 @@ def sample_sequence(
                     else:
                         part_new_all_probs = new_all_probs
 
+                    #* combine probabilities
                     if args.averaging == "arithmetic":
                         combined_ppl = np.mean(part_new_all_probs)
                     elif args.averaging == "geometric":
@@ -468,7 +529,7 @@ def sample_sequence(
                         raise Exception("Unknown averaging")
 
                     # We deep copy as multiple branches can be created from each beam element.
-                    # We don't want to multiple branches to overwrite each other.
+                    # We don't want multiple branches to overwrite each other.
                     new_item = custom_deep_copy(item)
 
                     if DEBUG:
@@ -520,7 +581,7 @@ def sample_sequence(
                             logger.debug(f"coverage_penalty: {coverage_penalty}")
 
                         new_item[out_name] = prefix
-                        # If next word is the end token then mark prefix as complete
+                        #* If next word is the end token then mark prefix as complete
                         curr_beam.add(
                             combined_ppl + coverage_penalty,
                             True,
@@ -532,7 +593,7 @@ def sample_sequence(
                         )
 
                     else:
-                        # If next word is a non-end token then mark prefix as incomplete
+                        #* If next word is a non-end token then mark prefix as incomplete
                         curr_beam.add(
                             combined_ppl,
                             False,
@@ -576,7 +637,7 @@ def sample_sequence(
 
     except:
         pass
-    # Return the best items' decoded text
+    # Return the best items' decoded text => this is a lie
     n_best_items = [x[3]["prefix"] for x in n_best_items]
 
     return n_best_items, prev_beam
@@ -598,7 +659,25 @@ def process_one_item(
         reranker=None,
         cons_classifier=None,
 ):
-    """Process one item during evaluation, either from file or form user's input"""
+    """Process one item during evaluation, either from file or form user's input
+
+
+    Args:
+        item (Dict): an item in the dataset
+        tokenizer (_type_): _description_
+        model (_type_): _description_
+        task_config (_type_): _description_
+        args (_type_): _description_
+        metrics_results (_type_, optional): _description_. Defaults to None.
+        metrics_fields (list, optional): _description_. Defaults to [].
+        input_cache (_type_, optional): _description_. Defaults to None.
+        avoided_cache (_type_, optional): _description_. Defaults to None.
+        reranker (_type_, optional): _description_. Defaults to None.
+        cons_classifier (_type_, optional): _description_. Defaults to None.
+
+    Returns:
+        _type_: _description_
+    """
     matching = True
     full_data_shape = copy.deepcopy(task_config["data_shape"])
     current_task_config = {"data_shape": []}

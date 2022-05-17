@@ -143,7 +143,8 @@ def build_input_from_segments(
 
 
 def get_inputs(item, device, tokenizer, task_config):
-    """Get the input_ids and the token_type_ids from the item dictionary"""
+    """Get the input_ids and the token_type_ids from the item dictionary.
+    They are returned as tensors of shape [1, sentence_len]."""
     instance, _ = build_input_from_segments(item, tokenizer, task_config, with_eos=False)
     input_ids = torch.tensor(instance["input_ids"], device=device).unsqueeze(0)
     token_type_ids = torch.tensor(instance["token_type_ids"], device=device).unsqueeze(0)

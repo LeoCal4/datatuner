@@ -76,16 +76,32 @@ def should_stop_further_beam_exploration(prefix, tokenizer, next_token_str, next
 
 
 def should_ignore_in_score(prefix, tokenizer, next_token_str, next_token_id, next_prob, prob_thresh=0.9):
+    """The current item should be ignored if all the conditions are met:
+        - it is a middle token
+        - it is alphanumeric
+        - it is not an added token
+        - its probability is high enough
+
+    Args:
+        prefix (List): words appeared in the sentence before the current one
+        tokenizer ()
+        next_token_str (List): current token
+        next_token_id (int): current token id
+        next_prob (_type_): current token probability
+        prob_thresh (float, optional): defaults to 0.9.
+
+    Returns:
+        _type_: _description_
+    """
     return (
-        # Probability is high enough
-        # next_prob > prob_thresh
         # The token is a middle token
-            is_middle_token(tokenizer, next_token_str, prefix)
-            # is alphanumeric (avoid punctuations)
-            and next_token_str.strip()[0].isalnum()
-            #  is not a special token
-            and not is_added_token(tokenizer, next_token_id)
-            and next_prob > prob_thresh
+        is_middle_token(tokenizer, next_token_str, prefix)
+        # is alphanumeric (avoid punctuations)
+        and next_token_str.strip()[0].isalnum()
+        #  is not a special token
+        and not is_added_token(tokenizer, next_token_id)
+        # Probability is high enough
+        and next_prob > prob_thresh
     )
 
 
