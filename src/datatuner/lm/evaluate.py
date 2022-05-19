@@ -659,7 +659,8 @@ def process_one_item(
         reranker=None,
         cons_classifier=None,
 ):
-    """Process one item during evaluation, either from file or form user's input
+    """Process one item during evaluation, either from file or form user's input.
+    Iterate on the fields of data_shape in task_config
 
 
     Args:
@@ -675,8 +676,9 @@ def process_one_item(
         reranker (_type_, optional): _description_. Defaults to None.
         cons_classifier (_type_, optional): _description_. Defaults to None.
 
-    Returns:
-        _type_: _description_
+    Returns: Dict: the item containing the generated sentence. 
+                    One of the keys is "original_<OG_SENTENCE_KEY>", containing the original sentence string,
+                    where <OG_SENTENCE_KEY> is the key used to store the sentence in the dataset
     """
     matching = True
     full_data_shape = copy.deepcopy(task_config["data_shape"])
@@ -688,7 +690,7 @@ def process_one_item(
 
     with torch.no_grad():
         key = None
-
+        #* iterate on data shape fields of task config
         while i < len(full_data_shape):
             current_data_item = full_data_shape[i]
             key = current_data_item["id"]
