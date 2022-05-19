@@ -60,8 +60,7 @@ def read_special_tokens(task_config: Dict, special_tokens_file_path: str) -> Lis
             tokens.extend(task_config["extra_special_tokens"])
     #* add base tokens
     tokens += ["<data>", "<text>"]
-    print(f"read {len(tokens)} special tokens from {special_tokens_file_path} and base tokens")
-    #? add mask token?
+    # print(f"read {len(tokens)} special tokens from {special_tokens_file_path} and base tokens")
     return tokens
 
 
@@ -118,7 +117,8 @@ class DatatunerDataset(Dataset):
                 # self.tokenizer.padding_token = self.tokenizer.eos_token                
                 source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}>" #? text special token probably useless
                 total_sources.append(source_string)
-                target_string = entry['text'][-1]
+                # e2e does not have a list of candidates but just the sentence as a string, so we check for that
+                target_string = entry['text'][-1] if type(entry['text']) in (tuple, list) else entry['text']
                 total_targets.append(target_string)
         self.processed_sources = self.tokenizer(
             total_sources, padding=self.source_padding_strategy, max_length=self.max_source_len,
@@ -142,26 +142,16 @@ class DatatunerDataset(Dataset):
 
 
 def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTrainedTokenizer,
-        train_batch_size: int = 8, val_batch_size: int = 1,
-        max_source_len: int = None, max_target_len: int = None) -> Dict[str, DataLoader]:
+        dataset_types: List[str] = ["train", "validation"], 
+        batch_sizes: Dict[str, int] = {"train": 8, "validation": 8},
+        max_source_len: int = None, max_target_len: int = None) -> Tuple[DataLoader]:
     data_loaders = {}
-    for dataset_type in ["train", "validation"]:
+    for dataset_type in dataset_types:
         current_dataset_path = os.path.join(base_dataset_path, f"{dataset_type}.json")
         raw_dataset = get_raw_dataset(current_dataset_path, task_config)
-        current_dataset = DatatunerDataset(raw_dataset, tokenizer, is_validation=bool(dataset_type=="validation"),
+        current_dataset = DatatunerDataset(raw_dataset, tokenizer, is_validation=bool(dataset_type!="train"),
             max_source_len=max_source_len, max_target_len=max_target_len)
-        batch_size = train_batch_size if dataset_type == "train" else val_batch_size
+        batch_size = batch_sizes[dataset_type]
         data_loaders[dataset_type] = DataLoader(
             current_dataset, batch_size=batch_size, shuffle=bool(dataset_type=="train"))
-    return data_loaders["train"], data_loaders["validation"]
-
-
-if __name__ == "__main__":
-    base_dataset_path = r"/content/drive/MyDrive/Tesi/datasets/webnlg/validation.json"
-    task_config_path = r"/content/drive/MyDrive/Tesi/datasets/webnlg/webnlg_task_config.json"
-    task_config = json.load(open(task_config_path, "r"))
-    special_tokens_path = r"/content/drive/MyDrive/Tesi/datasets/webnlg/special_tokens.txt"
-    special_tokens = read_special_tokens(task_config, special_tokens_path)
-    tokenizer = T5Tokenizer.from_pretrained("t5-small")
-    tokenizer.add_tokens(special_tokens)
-    data_loaders = get_data_loaders(base_dataset_path, task_config, tokenizer)
+    return tuple(data_loaders.values())

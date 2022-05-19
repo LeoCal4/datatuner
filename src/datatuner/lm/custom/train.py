@@ -1,6 +1,5 @@
 from copy import deepcopy
 import logging
-import datetime
 import argparse
 import random
 import numpy as np
@@ -24,8 +23,6 @@ from nltk.translate.bleu_score import sentence_bleu
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__file__)
 
-# Configuration details. These could be passed as command line arguments but are done this way
-# for simplicity.
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -117,7 +114,7 @@ def main():
     log.info(f"Loading dataset from {args.base_dataset_path}")
     train_loader, val_loader = datatuner_dataset.get_data_loaders(
         args.base_dataset_path, task_config, tokenizer, 
-        train_batch_size=args.train_batch_size, val_batch_size=args.val_batch_size)
+        batch_sizes={"train": args.train_batch_size, "validation": args.val_batch_size})
     log.info(f"Train size: {len(train_loader)} - Val size: {len(val_loader)}")
 
     #* set up optimizer and scheduler
@@ -130,12 +127,13 @@ def main():
              f'Total steps: {total_steps}\n'
              f'Total train (# training examples * epochs): {total_train}\n')
 
+    #* log args
     config_str = "\n"
     for k, v in vars(args).items():
         config_str += f"{k}: {v}\n"
-    config_str += f"Save directory: {args.save_dir_path}\n"
     log.info(config_str)
 
+    #* train
     log.info("Starting training")
     epoch = 0
     step = 0 # number of total examples we have done (will be epoch * len(data_set) at end of each epoch)
@@ -144,7 +142,7 @@ def main():
     best_model_state_dict = None
     while epoch < args.epochs:
         epoch += 1
-        #* train
+        log.info(f">>>> Starting epoch {epoch}")
         model.train()
         with torch.enable_grad(), tqdm(total=num_train) as progress_bar:
             for batch_num, batch in enumerate(train_loader):
@@ -163,13 +161,12 @@ def main():
                 step += batch_size
                 progress_bar.update(batch_size)
                 progress_bar.set_postfix(epoch=epoch, loss=loss_val)
-                # tbx.add_scalar('train/loss', loss_val, step)
-                # tbx.add_scalar('train/LR', optimizer.param_groups[0]['lr'], step)
 
         #* evaluate
         log.info(f'Evaluating at step {step}...')
         intermediate_predictions = []
-        bleus = []
+        best_choice_bleus = []
+        default_choice_bleus = []
         num_val = len(val_loader.dataset)
         model.eval()
         with torch.no_grad(), tqdm(total=num_val) as progress_bar:
@@ -197,68 +194,79 @@ def main():
                 outputs_decoded = np.array(tokenizer.batch_decode(generated_ids, skip_special_tokens=True))
                 # they are not divided into batch so we reorder them from (batch size * beam size, sequence size) to (batch, beam, sequence)
                 outputs_decoded = outputs_decoded.reshape(-1, 5)
-                best_decoded_outputs = []
+                decoded_best_outputs = []
+                decoded_default_choice_outputs = []
+                #* for each group of sentences, keep the first (default) one and the one achieving the highest BLEU
                 for source, generated_beam in zip(original_text_targets, outputs_decoded):
                     highest_bleu = 0
-                    highest_sentence_index = 0
+                    best_sentence_index = 0
                     for index, generated in enumerate(generated_beam):
                         current_bleu = sentence_bleu([source], generated)
                         if current_bleu > highest_bleu:
-                            highest_sentence_index = index
+                            best_sentence_index = index
                             highest_bleu = current_bleu
-                    bleus.append(highest_bleu)
-                    best_decoded_outputs.append(generated_beam[highest_sentence_index])
-                current_predictions = list(zip(original_data_inputs, original_text_targets, best_decoded_outputs))
+                        #* save the first one as the default choice, as in reality we cannot compare with the real sentence
+                        if index == 0: 
+                            default_choice_bleus.append(current_bleu)
+                            decoded_default_choice_outputs.append(generated)
+                    best_choice_bleus.append(highest_bleu)
+                    decoded_best_outputs.append(generated_beam[best_sentence_index])
+                current_predictions = list(zip(
+                    original_data_inputs, original_text_targets, decoded_default_choice_outputs, decoded_best_outputs
+                    ))
                 intermediate_predictions.extend(current_predictions)
 
                 #* print one batch of generations for qualitative assessment
                 if batch_num == 0:
-                    for data, orig_input, actual_output in current_predictions[:1]:
-                        log.info(f"\nData: {data}\n"
-                                f"\nSource: {orig_input}\n"
-                                f"\tGenerated: {actual_output}")
-
+                    data, orig_input, actual_output, best_output = current_predictions[0]
+                    log.info(f"\nData: {data}\n"
+                            f"\nSource: {orig_input}\n"
+                            f"\nGenerated (default choice): {actual_output}"
+                            f"\nGenerated (best): {best_output}")
                 #* log info
                 progress_bar.update(batch_size)
+
         #* compute the average BLEU score
-        current_avg_bleu = sum(bleus)/float(len(bleus))
-        log.info(f"\nAverage BLEU at end of epoch {epoch}: {current_avg_bleu:.3f}")
+        current_default_choice_avg_bleu = sum(default_choice_bleus)/float(len(default_choice_bleus))
+        current_best_choice_avg_bleu = sum(best_choice_bleus)/float(len(best_choice_bleus))
+        log.info(f"Average BLEU at end of epoch {epoch}     : {current_default_choice_avg_bleu:.3f}")
+        log.info(f"Average best BLEU at end of epoch {epoch}: {current_best_choice_avg_bleu:.3f}")
         #* check if the model got worse and stop training in that case
-        if current_avg_bleu < last_avg_bleu:
-            log.info(f"Stopping training (prev bleu {last_avg_bleu} > curr bleu {current_avg_bleu})")
+        if current_default_choice_avg_bleu < last_avg_bleu:
+            log.info(f"Stopping training (prev bleu {last_avg_bleu} > curr bleu {current_default_choice_avg_bleu})")
             break
         #* save the new avg BLUE, predictions and model, since this model is necessarily better
         log.info("Current version of the model is better than the previous ones, saving...")
-        last_avg_bleu = current_avg_bleu
+        log.info("===============================================================")
+        last_avg_bleu = current_default_choice_avg_bleu
+        best_loss = loss
+        best_epoch = epoch
         best_predictions = intermediate_predictions
         # state_dict is deepcopied since otherwise it would get updated with the model training
         best_model_state_dict = deepcopy(model.state_dict())
     
 
-    #* create a directory in the save_dir folder called <dataset_name>_<timestamp>
-    dataset_name = args.base_dataset_path.split(os.sep)[-1]
-    # model_dir_name = f"{dataset_name}_{int(datetime.datetime.now().timestamp())}"
-    # full_dir_path = os.path.join(args.save_dir_path, f"{model_dir_name}")
-    log.info(f"Training complete, saving predictions and model at {args.save_dir_path}")
+    #* create the save/output folder
+    log.info(f"Saving predictions and model at {args.save_dir_path}")
     os.makedirs(args.save_dir_path, exist_ok=True)
     #* save predictions
     to_write = ""
-    for prediction_pair in best_predictions:
-        data, source, generated = prediction_pair
-        to_write += f"DATA: {data}\nOG: {source}\nGEN: {generated}\n\n"
+    for prediction_tuple in best_predictions:
+        data, source, default_generated, best_generated = prediction_tuple
+        to_write += f"DATA: {data}\nOG: {source}\nGEN (default): {default_generated}\nGEN (best): {best_generated}\n\n"
     with open(os.path.join(args.save_dir_path, "predictions.txt"), "w") as f:
         f.write(to_write)
     #* save training/model stats
     with open(os.path.join(args.save_dir_path, "stats.txt"), "w") as f:
-        f.write(f"Training ended at epoch {epoch}\nLoss {loss_val:.5f}\nAvg final BLEU: {last_avg_bleu:.5f}")
+        f.write(f"Training ended at epoch {best_epoch}\nLoss {best_loss.item():.5f}\nAvg final BLEU: {last_avg_bleu:.5f}\nAvg final best BLEU: {current_best_choice_avg_bleu:.5f}")
     #* save model
     torch.save({
-        "epoch": epoch,
+        "epoch": best_epoch,
         "model_state_dict": best_model_state_dict,
         'optimizer_state_dict': optimizer.state_dict(),
         'loss': loss
     }, os.path.join(args.save_dir_path, "model_params.tar"))
-    log.info("Training complete!")
+    log.info(f"Training complete! Final loss: {best_loss.item():.5f} - Final avg BLEU: {last_avg_bleu:.5f}")
 
 
 if __name__ == '__main__':
