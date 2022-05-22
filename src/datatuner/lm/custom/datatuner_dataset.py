@@ -4,7 +4,40 @@ import json
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
-from transformers import T5Tokenizer
+
+
+def remove_non_bracketed_keys(sentence: str) -> str:
+    """Removes the keywords which are repeated outside of the angle brackets. 
+    For example, the sentence:
+        <give_opinion> give opinion ( <name> name: [ SpellForce 3 ], <release_year> release year: [ 2017 ] )
+    becomes:
+        <give_opinion> ( <name> [ SpellForce 3 ], <release_year> [ 2017 ] )
+    
+    This assumes that there may be either one or two word (separated by space or _) inside the angle brackets, 
+        and that therefore one or two words must be removed afterwards.
+
+    Args:
+        sentence (str)
+
+    Returns:
+        str
+    """
+    try:
+        tokenized_sentence = sentence.strip().split(" ")
+        delete_two = False
+        for i, token in enumerate(tokenized_sentence):
+            if token[-1] == ">":
+                del tokenized_sentence[i+1]
+                if delete_two or "_" in token:
+                    del tokenized_sentence[i+1]
+                delete_two = False
+            elif token[0] == "<": # the token is in the form "token>", hence there was another word before it
+                delete_two = True
+    except:
+        print("sentence: ", sentence)
+        print("tokenized_sentence: ", tokenized_sentence)
+        return ""
+    return " ".join(tokenized_sentence)
 
 
 def get_raw_dataset(filename: str, task_config: Dict) -> List[Dict]:
@@ -35,12 +68,15 @@ def get_raw_dataset(filename: str, task_config: Dict) -> List[Dict]:
         #*  the first one is always the data, the second is the sentence 
         for i, text_field in enumerate(text_fields):
             item[NEW_TEXT_FIELD_NAMES[i]] = raw_data_point[text_field["id"]]
-
+        #     if NEW_TEXT_FIELD_NAMES[i] == "data":
+        #         item[NEW_TEXT_FIELD_NAMES[i]] = remove_non_bracketed_keys(item[NEW_TEXT_FIELD_NAMES[i]])
+        # if item[NEW_TEXT_FIELD_NAMES[0]] == "":
+        #     continue
         #* add any needed extra_field
         if "extra_fields" in task_config: # found in webnlg
             for extra_field in task_config["extra_fields"]:
                 item[extra_field] = raw_data_point[extra_field]
-        
+
         raw_dataset.append(item)
     return raw_dataset
 
@@ -98,28 +134,15 @@ class DatatunerDataset(Dataset):
         total_sources = []
         total_targets = []
         for entry in self.raw_dataset:
-            if not self.is_validation:
-                self.tokenizer.padding_size = "right"
-                #* build and tokenize the source string (data token + data + text token + text) ([-1] is needed to take the correct sentence)
-                source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}> {entry['text'][-1]}"
-                source_string = self.tokenizer(source_string)["input_ids"]
-                total_sources.append(source_string)
-                #* tokenize the text part for the target
-                only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"]
-                #* manually pad the target string on the left to make it the same size of the source text
-                target_string = [
-                    self.tokenizer.pad_token_id for _ in range(len(source_string) - len(only_text_tokens))
-                    ] + only_text_tokens
-                total_targets.append(target_string)
-            else:
-                # these tokenizer settings are taken from https://huggingface.co/docs/transformers/v4.18.0/en/model_doc/t5#inference
-                # self.tokenizer.padding_size = "left"
-                # self.tokenizer.padding_token = self.tokenizer.eos_token                
-                source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}>" #? text special token probably useless
-                total_sources.append(source_string)
-                # e2e does not have a list of candidates but just the sentence as a string, so we check for that
-                target_string = entry['text'][-1] if type(entry['text']) in (tuple, list) else entry['text']
-                total_targets.append(target_string)
+            # these tokenizer settings are taken from https://huggingface.co/docs/transformers/v4.18.0/en/model_doc/t5#inference
+            # self.tokenizer.padding_size = "left"
+            # self.tokenizer.padding_token = self.tokenizer.eos_token                
+            # source_string = entry['data'] #! CHANGED
+            source_string = f"from data to text: <{self.data_special_token}> {entry['data']} <{self.text_special_token}>"
+            total_sources.append(source_string)
+            # e2e does not have a list of candidates but just the sentence as a string, so we check for that
+            target_string = entry['text'][-1] if type(entry['text']) in (tuple, list) else entry['text']
+            total_targets.append(target_string)
         self.processed_sources = self.tokenizer(
             total_sources, padding=self.source_padding_strategy, max_length=self.max_source_len,
             return_tensors="pt", truncation=True
@@ -134,6 +157,8 @@ class DatatunerDataset(Dataset):
 
     def __getitem__(self, idx) -> Tuple[Dict]:
         item = {}
+        item["source_data"] = self.raw_dataset[idx]["data"]
+        item["target_text"] = self.raw_dataset[idx]["text"]
         item["source_input_ids"] = self.processed_sources.data["input_ids"][idx]
         item["source_attention_mask"] = self.processed_sources.data["attention_mask"][idx]
         item["target_input_ids"] = self.processed_targets.data["input_ids"][idx]
