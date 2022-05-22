@@ -12,12 +12,14 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformers import (
     AdamW,
+    Adafactor,
     T5ForConditionalGeneration,
     T5Tokenizer,
     get_linear_schedule_with_warmup
 )
 
-from datatuner.lm.custom import datatuner_dataset
+from datatuner.lm.custom import datatuner_dataset, custom_loss
+
 from nltk.translate.bleu_score import sentence_bleu
 
 logging.basicConfig(level=logging.INFO)
@@ -76,7 +78,8 @@ def forward(model, batch, device: str, pad_token_id: int = 0):
     label_ids = target_ids.to(device)
     out_dict = model(source_ids, attention_mask=source_mask, labels=label_ids, return_dict=True)
     loss = out_dict[0]
-    return loss
+    logits = out_dict[1]
+    return loss, logits
 
 
 def main():
@@ -120,7 +123,19 @@ def main():
     #* set up optimizer and scheduler
     num_train = len(train_loader.dataset)
     total_train = num_train * args.epochs
-    total_steps = ( (num_train // args.train_batch_size) * args.epochs)     # num times that optim.step() will be called
+    total_steps = ( (num_train // args.train_batch_size) * args.epochs) # num times that optim.step() will be called
+    # optimizer = Adafactor(
+    #     model.parameters(),
+    #     lr=1e-3,
+    #     eps=(1e-30, 1e-3),
+    #     clip_threshold=1.0,
+    #     decay_rate=-0.8,
+    #     beta1=None,
+    #     weight_decay=0.0,
+    #     relative_step=False,
+    #     scale_parameter=False,
+    #     warmup_init=False,
+    # )
     optimizer = AdamW(model.parameters(), lr=args.lr, eps=args.adam_epsilon)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=total_steps)
     log.info(f'Device: {args.device}\n'
@@ -148,14 +163,17 @@ def main():
             for batch_num, batch in enumerate(train_loader):
                 #* forward
                 batch_size = len(batch["source_input_ids"])
-                loss = forward(model, batch, args.device, pad_token_id=tokenizer.pad_token_id)
-                loss_val = loss.item()      # get the item since loss is a tensor
+                loss, logits = forward(model, batch, args.device, pad_token_id=tokenizer.pad_token_id)
+                # max_logits = logits.max(2).indices
+                # batch_sentences = tokenizer.batch_decode(max_logits, skip_special_tokens=True)
+                # semantic_fidelity_loss = custom_loss.semantic_fidelity_loss(batch["source_data"], batch_sentences).to(args.device)
+                # loss = semantic_fidelity_loss + loss
+                loss_val = loss.item() # get the item since loss is a tensor
                 #* backward
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 optimizer.step()
-                optimizer.zero_grad() #! is this needed/harmful? TODO check
                 scheduler.step()
                 #* log info
                 step += batch_size
