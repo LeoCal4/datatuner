@@ -1,26 +1,20 @@
-from copy import deepcopy
-import logging
 import argparse
-import random
-import numpy as np
 import json
-from typing import *
+import logging
 import os
+import random
+from copy import deepcopy
+from typing import *
 
+import numpy as np
 import torch
 import torch.nn as nn
-from tqdm import tqdm
-from transformers import (
-    AdamW,
-    Adafactor,
-    T5ForConditionalGeneration,
-    T5Tokenizer,
-    get_linear_schedule_with_warmup
-)
-
-from datatuner.lm.custom import datatuner_dataset, custom_loss
-
+from datatuner.lm.custom import datatuner_dataset, metrics
+from datatuner.lm.custom.custom_models import CustomT5Model
 from nltk.translate.bleu_score import sentence_bleu
+from tqdm import tqdm
+from transformers import (Adafactor, AdamW, T5ForConditionalGeneration,
+                          T5Tokenizer, get_linear_schedule_with_warmup)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__file__)
@@ -30,6 +24,7 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=42, help="Seed")
     parser.add_argument("--base_dataset_path", type=str, help="Path of the dataset.")
+    parser.add_argument("--consistency_dataset_path", type=str, default=None, help="Path of the consistency dataset.")
     parser.add_argument("--task_config_path", type=str, help="Path to the tokenization config file")
     parser.add_argument("--special_tokens_path", type=str, default=None, help="Path to the special tokens file")
     parser.add_argument("--train_params_path", type=str, help="JSON file with training parameters.")
@@ -55,32 +50,6 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def forward(model, batch, device: str, pad_token_id: int = 0):
-    """When we call model() with labels, they will be:
-    - automatically right shifted by 1 (for teacher forcing)
-    - prepended by BOS=Beginning of sequence which is a PAD token
-    - any token that was -100 will be masked_fill_ to <pad> for teacher forcing
-
-    Args:
-        model (_type_)
-        device (str)
-        batch (_type_)
-        pad_token_id (int): defaults to 0
-
-    Returns:
-        float: loss value
-    """
-    source_ids = batch["source_input_ids"].to(device, dtype=torch.long)
-    source_mask = batch["source_attention_mask"].to(device, dtype=torch.long)
-    target_ids = batch["target_input_ids"].to(device, dtype=torch.long)
-    #* padded ids are set to -100, so that they are ignored during loss calculation
-    target_ids[target_ids[: ,:] == pad_token_id] = -100
-    label_ids = target_ids.to(device)
-    out_dict = model(source_ids, attention_mask=source_mask, labels=label_ids, return_dict=True)
-    loss = out_dict[0]
-    logits = out_dict[1]
-    return loss, logits
-
 
 def main():
     #* set seed and args
@@ -98,7 +67,7 @@ def main():
 
     #* load model and tokenizer
     log.info(f"Loading model and tokenizer")
-    model = T5ForConditionalGeneration.from_pretrained(args.model_name)
+    base_model = T5ForConditionalGeneration.from_pretrained(args.model_name)
     tokenizer = T5Tokenizer.from_pretrained(args.model_name)
 
     #* check and eventually update special_tokens_path
@@ -110,14 +79,14 @@ def main():
     task_config = json.load(open(args.task_config_path, "r"))
     special_tokens = datatuner_dataset.read_special_tokens(task_config, args.special_tokens_path)
     tokenizer.add_tokens(special_tokens)
-    model.resize_token_embeddings(len(tokenizer))
-    model.to(args.device)
+    base_model.resize_token_embeddings(len(tokenizer))
 
     #* load dataset as DataLoaders
     log.info(f"Loading dataset from {args.base_dataset_path}")
     train_loader, val_loader = datatuner_dataset.get_data_loaders(
         args.base_dataset_path, task_config, tokenizer, 
-        batch_sizes={"train": args.train_batch_size, "validation": args.val_batch_size})
+        batch_sizes={"train": args.train_batch_size, "validation": args.val_batch_size},
+        consistency_dataset_path=args.consistency_dataset_path)
     log.info(f"Train size: {len(train_loader)} - Val size: {len(val_loader)}")
 
     #* set up optimizer and scheduler
@@ -136,7 +105,9 @@ def main():
     #     scale_parameter=False,
     #     warmup_init=False,
     # )
-    optimizer = AdamW(model.parameters(), lr=args.lr, eps=args.adam_epsilon)
+    model = CustomT5Model(base_model, tokenizer, args.device)
+    model.to(args.device)
+    optimizer = AdamW(model.parameters(), lr=args.lr, eps=args.adam_epsilon) #! WARNING
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=total_steps)
     log.info(f'Device: {args.device}\n'
              f'Total steps: {total_steps}\n'
@@ -162,12 +133,7 @@ def main():
         with torch.enable_grad(), tqdm(total=num_train) as progress_bar:
             for batch_num, batch in enumerate(train_loader):
                 #* forward
-                batch_size = len(batch["source_input_ids"])
-                loss, logits = forward(model, batch, args.device, pad_token_id=tokenizer.pad_token_id)
-                # max_logits = logits.max(2).indices
-                # batch_sentences = tokenizer.batch_decode(max_logits, skip_special_tokens=True)
-                # semantic_fidelity_loss = custom_loss.semantic_fidelity_loss(batch["source_data"], batch_sentences).to(args.device)
-                # loss = semantic_fidelity_loss + loss
+                loss = model(batch)
                 loss_val = loss.item() # get the item since loss is a tensor
                 #* backward
                 optimizer.zero_grad()
@@ -176,6 +142,7 @@ def main():
                 optimizer.step()
                 scheduler.step()
                 #* log info
+                batch_size = len(batch["source_input_ids"])
                 step += batch_size
                 progress_bar.update(batch_size)
                 progress_bar.set_postfix(epoch=epoch, loss=loss_val)
@@ -189,23 +156,8 @@ def main():
         model.eval()
         with torch.no_grad(), tqdm(total=num_val) as progress_bar:
             for batch_num, batch in enumerate(val_loader):
-                batch_size = len(batch["source_input_ids"])
-
-                # #* evaluation for loss fcn
-                # loss, _ = forward(model, batch, args.device)     # loss, logits, but don't need logits
-                # loss_meter.update(loss.item(), batch_size)  # loss.item() since it's a tensor
-
                 #* generate for token matches
-                source_ids = batch["source_input_ids"].to(args.device, dtype=torch.long)
-                source_mask = batch["source_attention_mask"].to(args.device, dtype=torch.long)
-                generated_ids = model.generate(
-                    source_ids, 
-                    attention_mask=source_mask, 
-                    max_length=200,
-                    num_beams=5,
-                    early_stopping=True,
-                    num_return_sequences=5,
-                ) #! hardcoded length TODO
+                generated_ids = model.inference(batch)
                 #* save for qualitative analysis
                 original_data_inputs = tokenizer.batch_decode(batch["source_input_ids"], skip_special_tokens=True)
                 original_text_targets = tokenizer.batch_decode(batch["target_input_ids"], skip_special_tokens=True)
@@ -242,27 +194,25 @@ def main():
                             f"\nGenerated (default choice): {actual_output}"
                             f"\nGenerated (best): {best_output}")
                 #* log info
+                batch_size = len(batch["source_input_ids"])
                 progress_bar.update(batch_size)
 
         #* compute the average BLEU score
-        current_default_choice_avg_bleu = sum(default_choice_bleus)/float(len(default_choice_bleus))
-        current_best_choice_avg_bleu = sum(best_choice_bleus)/float(len(best_choice_bleus))
-        log.info(f"Average BLEU at end of epoch {epoch}     : {current_default_choice_avg_bleu:.3f}")
-        log.info(f"Average best BLEU at end of epoch {epoch}: {current_best_choice_avg_bleu:.3f}")
+        current_corpus_bleu_score = metrics.corpus_level_bleu(intermediate_predictions)
+        log.info(f"BLEU at end of epoch {epoch}: {current_corpus_bleu_score:.3f}")
         #* check if the model got worse and stop training in that case
-        if current_default_choice_avg_bleu < last_avg_bleu:
-            log.info(f"Stopping training (prev bleu {last_avg_bleu} > curr bleu {current_default_choice_avg_bleu})")
+        if current_corpus_bleu_score < last_avg_bleu:
+            log.info(f"Stopping training (prev bleu {last_avg_bleu} > curr bleu {current_corpus_bleu_score})")
             break
         #* save the new avg BLUE, predictions and model, since this model is necessarily better
         log.info("Current version of the model is better than the previous ones, saving...")
         log.info("===============================================================")
-        last_avg_bleu = current_default_choice_avg_bleu
+        last_avg_bleu = current_corpus_bleu_score
         best_loss = loss
         best_epoch = epoch
         best_predictions = intermediate_predictions
         # state_dict is deepcopied since otherwise it would get updated with the model training
         best_model_state_dict = deepcopy(model.state_dict())
-    
 
     #* create the save/output folder
     log.info(f"Saving predictions and model at {args.save_dir_path}")
@@ -276,7 +226,7 @@ def main():
         f.write(to_write)
     #* save training/model stats
     with open(os.path.join(args.save_dir_path, "stats.txt"), "w") as f:
-        f.write(f"Training ended at epoch {best_epoch}\nLoss {best_loss.item():.5f}\nAvg final BLEU: {last_avg_bleu:.5f}\nAvg final best BLEU: {current_best_choice_avg_bleu:.5f}")
+        f.write(f"Training ended at epoch {best_epoch}\nLoss {best_loss.item():.5f}\nAvg final BLEU: {last_avg_bleu:.5f}")
     #* save model
     torch.save({
         "epoch": best_epoch,
