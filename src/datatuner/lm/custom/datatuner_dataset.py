@@ -1,12 +1,16 @@
 import csv
 import json
 import os
+import re
+import logging
 from typing import Dict, List, Tuple
 
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__file__)
 
 def remove_non_bracketed_keys(sentence: str) -> str:
     """Removes the keywords which are repeated outside of the angle brackets. 
@@ -115,15 +119,65 @@ def read_special_tokens(task_config: Dict, special_tokens_file_path: str) -> Lis
     tokens += ["<data>", "<text>"]
     return tokens
 
+def process_viggo_key(key: str) -> str:
+    key = key.replace("steam", "Steam")
+    key = key.replace("mac", "Mac")
+    key = key.replace("linux", "Linux")
+    key = key.replace("windows", "Windows")
+    key = key.replace("esrb", "ESRB")
+    key = key.replace("exp", "expected")
+    return key
+
+def process_e2e_key(key: str) -> str:
+    key = key.replace("eatType", "eat type")
+    key = key.replace("priceRange", "price range")
+    key = key.replace("familyFriendly", "family friendly")
+    key = key.replace("customerRating", "customer rating")
+    return key
+
+def process_data(data: str, dataset: str) -> str:
+    key_value_separator = "="
+    slots_separator = "|"
+    sentence_separator = "."
+    final_sentence = ""
+    if dataset == "webnlg":
+        matches = re.findall(r"(<[\w\s]*>)\s*([^<;]*)(;)?", data)
+        for match in matches:
+            bracketed_key = match[0]
+            key = bracketed_key.strip(" <>")
+            value = match[1].strip()
+            end_sentence = match[2]
+            final_token = slots_separator if not end_sentence else end_sentence
+            final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {final_token} "
+    elif dataset == "viggo":
+        final_sentence = data.split("(")[0].strip() + f" {slots_separator} "
+        matches = re.findall(r"(<[\w\s]*>)\s*[\w\s]*:\s*\[\s*([^\]]*)\s*\]", data)
+        for match in matches:
+            bracketed_key = match[0]
+            key = bracketed_key.strip(" <>").replace("_", " ")
+            key = process_viggo_key(key)
+            value = match[1].strip()
+            final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {slots_separator} "
+    elif dataset == "e2e":
+        matches = re.findall(r"(<[\w\s]*>)\s*[\w\s=]*\[\s*([^\]]*)\s*\]", data)
+        for match in matches:
+            bracketed_key = match[0]
+            key = bracketed_key.strip(" <>")
+            key = process_e2e_key(key)
+            value = match[1].strip()
+            final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {slots_separator} "
+    return final_sentence[:-2] + sentence_separator
+
 
 class DatatunerDataset(Dataset):
-    def __init__(self, raw_dataset: List[Dict], tokenizer: PreTrainedTokenizer,
+    def __init__(self, raw_dataset: List[Dict], tokenizer: PreTrainedTokenizer, dataset_name: str,
             data_special_token: str = "data", text_special_token: str = "text",
             max_source_len: int = None, max_target_len: int = None,
             raw_consistency_dataset: List[Dict[str, str]] = None,
             max_consistency_sentences: int = 3) -> None:
         self.raw_dataset = raw_dataset
         self.tokenizer = tokenizer
+        self.dataset_name = dataset_name
         self.data_special_token = data_special_token
         self.text_special_token = text_special_token
         self.max_source_len = max_source_len
@@ -150,11 +204,16 @@ class DatatunerDataset(Dataset):
         """
         total_sources = []
         total_targets = []
-        for entry in self.raw_dataset:
+        prefix = "from Data to English:"
+        for i, entry in enumerate(self.raw_dataset):
             # these tokenizer settings are taken from https://huggingface.co/docs/transformers/v4.18.0/en/model_doc/t5#inference
             # self.tokenizer.padding_size = "left"
-            # self.tokenizer.padding_token = self.tokenizer.eos_token                
-            source_string = f"from data to text: <{self.data_special_token}> {entry['data']} <{self.text_special_token}>"
+            # self.tokenizer.padding_token = self.tokenizer.eos_token
+            processed_data = process_data(entry["data"], self.dataset_name)
+            #* substitute with new raw data
+            source_string = f"{prefix} <{self.data_special_token}> {processed_data} <{self.text_special_token}>"
+            # source_string = f"{prefix} <{self.data_special_token}> {processed_data} <{self.text_special_token}>"
+            self.raw_dataset[i]["data"] = source_string
             total_sources.append(source_string)
             # e2e does not have a list of candidates but just the sentence as a string, so we check for that
             target_string = entry['text'][-1] if type(entry['text']) in (tuple, list) else entry['text']
@@ -207,6 +266,8 @@ def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTr
         consistency_dataset_path: str = None) -> Tuple[DataLoader]:
     assert dataset_types == list(batch_sizes.keys())
     data_loaders = {}
+    #! assuming that the name of the dataset folder is the dataset name
+    dataset_name = base_dataset_path.split(os.sep)[-1]
     for dataset_type in dataset_types:
         current_dataset_path = os.path.join(base_dataset_path, f"{dataset_type}.json")
         raw_dataset = get_raw_dataset(current_dataset_path, task_config)
@@ -214,9 +275,11 @@ def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTr
         if consistency_dataset_path:
             current_consistency_dataset_path = os.path.join(consistency_dataset_path, f"{dataset_type}.tsv")
             raw_consistency_dataset = get_consistency_dataset(current_consistency_dataset_path)
-        current_dataset = DatatunerDataset(raw_dataset, tokenizer,
+        current_dataset = DatatunerDataset(raw_dataset, tokenizer, dataset_name,
             max_source_len=max_source_len, max_target_len=max_target_len, 
             raw_consistency_dataset=raw_consistency_dataset)
+        log.info(current_dataset[0]["source_data"])
+        log.info(current_dataset[0]["target_text"])
         batch_size = batch_sizes[dataset_type]
         data_loaders[dataset_type] = DataLoader(
             current_dataset, batch_size=batch_size, shuffle=bool(dataset_type=="train"))
