@@ -1,7 +1,14 @@
 from typing import Dict
+import logging
 
 import torch
 import torch.nn as nn
+
+from datatuner.lm.custom import custom_loss
+
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__file__)
 
 
 class CustomT5Model(nn.Module):
@@ -11,8 +18,6 @@ class CustomT5Model(nn.Module):
         self.tokenizer = tokenizer
         self.device = device
         self.consistency_loss_weight = consistency_loss_weight
-        # self.w1 = nn.Parameter(torch.tensor([0.5]))
-        # self.w2 = nn.Parameter(torch.tensor([0.5]))
 
     def _inner_forward(self, batch: Dict[str, torch.Tensor], pad_token_id: int = 0):
         """When we call model() with labels, they will be:
@@ -65,18 +70,19 @@ class CustomT5Model(nn.Module):
 
     def forward(self, batch: Dict[str, torch.Tensor]):
         loss, logits = self._inner_forward(batch)
-        if "consistency_sentences_input_ids" in batch:
-            loss = self.consistency_loss(
-                logits, 
-                batch["consistency_sentences_input_ids"].to(device=self.device, dtype=torch.long),
-                batch["target_input_ids"].to(device=self.device, dtype=torch.long)
-            )
-        # max_logits = logits.max(2).indices
-        # batch_sentences = self.tokenizer.batch_decode(max_logits, skip_special_tokens=True)
-        # semantic_fidelity_loss = self.semantic_fidelity_loss(
-        #     batch["source_data"], batch["target_text"], batch_sentences,
-        #     ).to(self.device)
-        # return semantic_fidelity_loss + loss
+        # if "consistency_sentences_input_ids" in batch:
+        #     loss = self.consistency_loss(
+        #         logits, 
+        #         batch["consistency_sentences_input_ids"].to(device=self.device, dtype=torch.long),
+        #         batch["target_input_ids"].to(device=self.device, dtype=torch.long)
+        #     )
+        # else:
+        #     sm_loss = custom_loss.semantic_fidelity_loss(
+        #         batch["source_input_ids"].to(device=self.device, dtype=torch.long),
+        #         batch["target_input_ids"].to(device=self.device, dtype=torch.long),
+        #         logits)
+            # log.info("sm_loss: ", sm_loss.item())
+            # loss = loss + 0.5 * sm_loss 
         return loss
     
     def inference(self, batch: Dict[str, torch.Tensor]):

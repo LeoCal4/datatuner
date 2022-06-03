@@ -11,10 +11,12 @@ import torch
 import torch.nn as nn
 from datatuner.lm.custom import datatuner_dataset, metrics
 from datatuner.lm.custom.custom_models import CustomT5Model
+from datatuner.lm.custom.utils import set_seed
 from nltk.translate.bleu_score import sentence_bleu
 from tqdm import tqdm
 from transformers import (Adafactor, AdamW, T5ForConditionalGeneration,
                           T5Tokenizer, get_linear_schedule_with_warmup)
+
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__file__)
@@ -38,17 +40,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Clipping gradient norm")
     parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
-    # parser.add_argument("--patience", type=int, default=1, help="patience parameter for early stopping")
     return parser.parse_args()
-
-
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
 
 
 def main():
@@ -88,6 +80,7 @@ def main():
         batch_sizes={"train": args.train_batch_size, "validation": args.val_batch_size},
         consistency_dataset_path=args.consistency_dataset_path)
     log.info(f"Train size: {len(train_loader)} - Val size: {len(val_loader)}")
+
 
     #* set up optimizer and scheduler
     num_train = len(train_loader.dataset)
