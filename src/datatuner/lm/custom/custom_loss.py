@@ -65,8 +65,8 @@ def soft_argmax(a: torch.Tensor) -> torch.Tensor:
 def semantic_fidelity_loss(source_data_ids, target_texts_ids, logits: List[str],
                             missing_data_token_weight: Union[float, torch.Tensor] = 0.5,
                             token_difference_weight: Union[float, torch.Tensor] = 0.5) -> torch.Tensor:
-    """A (theorically) differentiable implemenation of the semantic fidelity loss.
-    The loss is comprises two elements. For each triple (input data - input text - output text) we calculate
+    """A (theorically) differentiable implementation of the semantic fidelity loss.
+    The loss comprises two elements. For each triple (input data - input text - output text) we calculate
         - the absolute difference between the number of data tokens and the number of data tokens
             actually used in the predicted sentence (this is technically an approximation of said value,
             given the implementation of tensor_intersection)
@@ -95,15 +95,15 @@ def semantic_fidelity_loss(source_data_ids, target_texts_ids, logits: List[str],
         source_intersect_predicted = tensor_intersection(data, predicted)
         intersection_len = differentiable_tensor_len(source_intersect_predicted)
         data_len = differentiable_tensor_len(data)
-        log_missing_data_tokens = torch.log((torch.abs(data_len - intersection_len))+0.1)
+        log_missing_data_tokens = torch.abs(data_len - intersection_len)
         total_missing_data_tokens.append(log_missing_data_tokens)
         #* calculate token difference
         target_len = differentiable_tensor_len(target)
         predicted_len = differentiable_tensor_len(predicted)
-        log_token_difference = torch.log(torch.abs(target_len - predicted_len)+0.1)
+        log_token_difference = torch.abs(target_len - predicted_len)
         total_token_differences.append(log_token_difference)
     total_missing_data_tokens = torch.stack(total_missing_data_tokens)
     total_token_differences = torch.stack(total_token_differences)
-    sf_loss = missing_data_token_weight * torch.mean(total_missing_data_tokens) + \
-                token_difference_weight * torch.mean(total_token_differences)
+    sf_loss = missing_data_token_weight * torch.log(torch.mean(total_missing_data_tokens)) + \
+                token_difference_weight * torch.log(torch.mean(total_token_differences))
     return sf_loss
