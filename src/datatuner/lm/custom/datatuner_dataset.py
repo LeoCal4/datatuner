@@ -140,12 +140,14 @@ def process_data(data: str, dataset: str) -> str:
     slots_separator = "|"
     sentence_separator = "."
     final_sentence = ""
+    values = []
     if dataset == "webnlg":
         matches = re.findall(r"(<[\w\s]*>)\s*([^<;]*)(;)?", data)
         for match in matches:
             bracketed_key = match[0]
             key = bracketed_key.strip(" <>")
             value = match[1].strip()
+            values.append(value)
             end_sentence = match[2]
             final_token = slots_separator if not end_sentence else end_sentence
             final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {final_token} "
@@ -157,6 +159,7 @@ def process_data(data: str, dataset: str) -> str:
             key = bracketed_key.strip(" <>").replace("_", " ")
             key = process_viggo_key(key)
             value = match[1].strip()
+            values.append(value)
             final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {slots_separator} "
     elif dataset == "e2e":
         matches = re.findall(r"(<[\w\s]*>)\s*[\w\s=]*\[\s*([^\]]*)\s*\]", data)
@@ -165,8 +168,11 @@ def process_data(data: str, dataset: str) -> str:
             key = bracketed_key.strip(" <>")
             key = process_e2e_key(key)
             value = match[1].strip()
+            values.append(value)
             final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {slots_separator} "
-    return final_sentence[:-2] + sentence_separator
+    else:
+        raise ValueError(f"No configuration for dataset with name {dataset}")
+    return final_sentence[:-2] + sentence_separator, " | ".join(values) + " |"
 
 
 class DatatunerDataset(Dataset):
@@ -204,12 +210,14 @@ class DatatunerDataset(Dataset):
         """
         total_sources = []
         total_targets = []
+        total_source_values = []
         prefix = "from Data to English:"
         for i, entry in enumerate(self.raw_dataset):
             # these tokenizer settings are taken from https://huggingface.co/docs/transformers/v4.18.0/en/model_doc/t5#inference
             # self.tokenizer.padding_size = "left"
             # self.tokenizer.padding_token = self.tokenizer.eos_token
-            processed_data = process_data(entry["data"], self.dataset_name)
+            processed_data, values = process_data(entry["data"], self.dataset_name)
+            total_source_values.append(values)
             #* substitute with new raw data
             source_string = f"{prefix} <{self.data_special_token}> {processed_data} <{self.text_special_token}>"
             # source_string = f"{prefix} <{self.data_special_token}> {processed_data} <{self.text_special_token}>"
@@ -226,7 +234,9 @@ class DatatunerDataset(Dataset):
             total_targets, padding=self.target_padding_strategy, max_length=self.max_target_len, 
             return_tensors="pt", truncation=True 
         )
+        self.raw_sources_values = total_source_values
     
+
     def process_raw_consistency_sentences(self):
         total_consistency_sentences = []
         current_target_len = len(self.processed_targets.data["input_ids"][0])
@@ -254,6 +264,7 @@ class DatatunerDataset(Dataset):
         item["source_attention_mask"] = self.processed_sources.data["attention_mask"][idx]
         item["target_input_ids"] = self.processed_targets.data["input_ids"][idx]
         item["target_attention_mask"] = self.processed_targets.data["attention_mask"][idx]
+        item["source_data_values"] = self.raw_sources_values[idx]
         if self.processed_consistency_sentences:
             item["consistency_sentences_input_ids"] = self.processed_consistency_sentences[idx]
         return item

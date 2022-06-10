@@ -1,12 +1,17 @@
 import logging
+import math
+import re
 from typing import List, Union
+
 import torch
+import torch.nn.functional as F
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__file__)
 
 
-def tensor_intersection(data: torch.Tensor, predicted: torch.Tensor) -> torch.Tensor:
+def differentiable_tensor_intersection(data: torch.Tensor, predicted: torch.Tensor) -> torch.Tensor:
     """Differentiable tensor intersection. Searches the elements of predicted in data,
     then returns a sliced version of predicted, containing only the elements in common.
 
@@ -17,9 +22,6 @@ def tensor_intersection(data: torch.Tensor, predicted: torch.Tensor) -> torch.Te
     Returns:
         torch.Tensor: tensor containing the intersection of data and predicted
     """
-    # a_cat_b, counts = torch.cat([a, b]).unique(return_counts=True)
-    # return a_cat_b[counts.gt(1)] # counts.gt returns a bool mask
-    # return a_cat_b[torch.where(counts.gt(1))] # where() returns the indexes of True elements
     base_mask = torch.zeros_like(predicted).bool()
     checked_tokens = []
     for token in data:
@@ -28,6 +30,12 @@ def tensor_intersection(data: torch.Tensor, predicted: torch.Tensor) -> torch.Te
         checked_tokens.append(token)
         base_mask += predicted.eq(token)
     return predicted[base_mask]
+
+
+def tensor_intersection(a, b) -> torch.Tensor:
+    """Returns a tensor with the elements contained in both a and b"""
+    a_cat_b, counts = torch.cat([a[a > 0], b[b > 0]]).unique(return_counts=True)
+    return a_cat_b[counts.gt(1)]
 
 
 def differentiable_tensor_len(a: torch.Tensor) -> torch.Tensor:
@@ -62,7 +70,7 @@ def soft_argmax(a: torch.Tensor) -> torch.Tensor:
     return torch.sum(torch.softmax(a*1e10, -1)*a_range, -1)
 
 
-def semantic_fidelity_loss(source_data_ids, target_texts_ids, logits: List[str],
+def differentiable_semantic_fidelity_loss(source_data_ids, target_texts_ids, logits: List[str],
                             missing_data_token_weight: Union[float, torch.Tensor] = 0.5,
                             token_difference_weight: Union[float, torch.Tensor] = 0.5) -> torch.Tensor:
     """A (theorically) differentiable implementation of the semantic fidelity loss.
@@ -92,18 +100,73 @@ def semantic_fidelity_loss(source_data_ids, target_texts_ids, logits: List[str],
     for data, target, predicted in zip(source_data_ids, target_texts_ids, predictions):
         #* check how many data tokens are found in predicted
         data = data.float()
-        source_intersect_predicted = tensor_intersection(data, predicted)
+        source_intersect_predicted = differentiable_tensor_intersection(data, predicted)
         intersection_len = differentiable_tensor_len(source_intersect_predicted)
         data_len = differentiable_tensor_len(data)
-        log_missing_data_tokens = torch.abs(data_len - intersection_len)
-        total_missing_data_tokens.append(log_missing_data_tokens)
+        missing_data_tokens = torch.abs(data_len - intersection_len)
+        total_missing_data_tokens.append(missing_data_tokens)
         #* calculate token difference
         target_len = differentiable_tensor_len(target)
         predicted_len = differentiable_tensor_len(predicted)
-        log_token_difference = torch.abs(target_len - predicted_len)
-        total_token_differences.append(log_token_difference)
+        token_difference_length = torch.abs(target_len - predicted_len)
+        total_token_differences.append(token_difference_length)
     total_missing_data_tokens = torch.stack(total_missing_data_tokens)
     total_token_differences = torch.stack(total_token_differences)
     sf_loss = missing_data_token_weight * torch.log(torch.mean(total_missing_data_tokens)) + \
                 token_difference_weight * torch.log(torch.mean(total_token_differences))
     return sf_loss
+
+
+def semantic_fidelity_loss_with_confidences(source_data_ids: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    """Loss based on the product of the means two elements: 
+        - ratio between the length of the intersection between generated/predicted 
+        sentences with the data and the length of the data (all in tensors/ids form)
+        - confidences
+
+    Returns:
+        torch.Tensor
+    """
+    total_len_ratios = []
+    softmaxes = F.softmax(logits, dim=1)
+    confidences, predictions = torch.max(softmaxes, -1)
+    for data, predicted in zip(source_data_ids, predictions):
+        source_intersect_predicted = tensor_intersection(data, predicted)
+        len_ratio = source_intersect_predicted.size(0)/data.size(0)
+        total_len_ratios.append(len_ratio)
+    mean_conf = torch.mean(confidences)
+    mean_ratios = sum(total_len_ratios) / len(total_len_ratios)
+    sf_loss = mean_conf * mean_ratios
+    return sf_loss
+
+
+def word_based_semantic_fidelity_loss(
+    source_data_values: List[str], 
+    target_data: List[str], 
+    logits: torch.Tensor, 
+    tokenizer: PreTrainedTokenizer) -> torch.Tensor:
+    """SM loss which calculates the following:
+        log 1/N SUM_i | intersection(tags, target) | / | intersection(tags, predicted) |
+    using the natural language version tags, target and predicted to get their intersection.
+
+    Returns:
+        torch.Tensor
+    """
+    total_len_ratios = []
+    softmaxes = F.softmax(logits, dim=1)
+    _, predictions = torch.max(softmaxes, -1)
+    batch_sentences = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    for data, target, predicted in zip(source_data_values, target_data, batch_sentences):
+        #* get all the data values tokens, separating both different slots and slots where more values are separated by a comma
+        data_tokens = list(re.findall(r"\s?([^|,]*)[|,]", data))
+        #* strip tokens and avoid getting "yes" and "no", as they don't provide anything
+        data_tokens = [token.strip() for token in data_tokens if token.strip() not in ["yes", "no"]]
+        data_tokens_in_target = 0.1 # avoids 0 division
+        for data_token in data_tokens:
+            data_tokens_in_target += int(data_token in target)
+        data_tokens_in_pred = 0.1 # avoids 0 division
+        for data_token in data_tokens:
+            data_tokens_in_pred += int(data_token in predicted)
+        len_ratio = data_tokens_in_target / data_tokens_in_pred
+        total_len_ratios.append(len_ratio)
+    mean_ratios = sum(total_len_ratios) / len(total_len_ratios)
+    return math.log(mean_ratios)

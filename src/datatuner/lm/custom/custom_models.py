@@ -12,12 +12,13 @@ log = logging.getLogger(__file__)
 
 
 class CustomT5Model(nn.Module):
-    def __init__(self, model, tokenizer, device="cuda", consistency_loss_weight: float = 0.1) -> None:
+    def __init__(self, model, tokenizer, device="cuda", consistency_loss_weight: float = 0.1, use_sf_loss: bool = False) -> None:
         super(CustomT5Model, self).__init__()
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
         self.consistency_loss_weight = consistency_loss_weight
+        self.use_sf_loss = use_sf_loss
 
     def _inner_forward(self, batch: Dict[str, torch.Tensor], pad_token_id: int = 0):
         """When we call model() with labels, they will be:
@@ -70,19 +71,20 @@ class CustomT5Model(nn.Module):
 
     def forward(self, batch: Dict[str, torch.Tensor]):
         loss, logits = self._inner_forward(batch)
-        # if "consistency_sentences_input_ids" in batch:
-        #     loss = self.consistency_loss(
-        #         logits, 
-        #         batch["consistency_sentences_input_ids"].to(device=self.device, dtype=torch.long),
-        #         batch["target_input_ids"].to(device=self.device, dtype=torch.long)
-        #     )
-        # else:
-        #     sm_loss = custom_loss.semantic_fidelity_loss(
-        #         batch["source_input_ids"].to(device=self.device, dtype=torch.long),
-        #         batch["target_input_ids"].to(device=self.device, dtype=torch.long),
-        #         logits)
-            # log.info("sm_loss: ", sm_loss.item())
-            # loss = loss + 0.5 * sm_loss 
+        if "consistency_sentences_input_ids" in batch:
+            loss = self.consistency_loss(
+                logits, 
+                batch["consistency_sentences_input_ids"].to(device=self.device, dtype=torch.long),
+                batch["target_input_ids"].to(device=self.device, dtype=torch.long)
+            )
+        elif self.use_sf_loss:
+            sf_loss = custom_loss.word_based_semantic_fidelity_loss(
+                batch["source_data_values"],
+                batch["target_text"],
+                logits,
+                self.tokenizer
+            )
+            loss = loss * sf_loss
         return loss
     
     def inference(self, batch: Dict[str, torch.Tensor]):

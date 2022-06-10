@@ -2,7 +2,6 @@ import argparse
 import json
 import logging
 import os
-import random
 from copy import deepcopy
 from typing import *
 
@@ -40,6 +39,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Clipping gradient norm")
     parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
+    parser.add_argument("--use_sf_loss", action="store_true", help="Whether to use the semantic fidelity loss or not.")
     return parser.parse_args()
 
 
@@ -60,7 +60,7 @@ def main():
     #* load model and tokenizer
     log.info(f"Loading model and tokenizer")
     base_model = T5ForConditionalGeneration.from_pretrained(args.model_name)
-    tokenizer = T5Tokenizer.from_pretrained(args.model_name)
+    tokenizer = T5Tokenizer.from_pretrained(args.model_name, model_max_length=512)
 
     #* check and eventually update special_tokens_path
     if not args.special_tokens_path:
@@ -81,7 +81,6 @@ def main():
         consistency_dataset_path=args.consistency_dataset_path)
     log.info(f"Train size: {len(train_loader)} - Val size: {len(val_loader)}")
 
-
     #* set up optimizer and scheduler
     num_train = len(train_loader.dataset)
     total_train = num_train * args.epochs
@@ -98,14 +97,13 @@ def main():
     #     scale_parameter=False,
     #     warmup_init=False,
     # )
-    model = CustomT5Model(base_model, tokenizer, args.device)
+    model = CustomT5Model(base_model, tokenizer, args.device, args.use_sf_loss)
     model.to(args.device)
-    optimizer = AdamW(model.parameters(), lr=args.lr, eps=args.adam_epsilon) #! WARNING
+    optimizer = AdamW(model.parameters(), lr=args.lr, eps=args.adam_epsilon)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=total_steps)
     log.info(f'Device: {args.device}\n'
              f'Total steps: {total_steps}\n'
              f'Total train (# training examples * epochs): {total_train}\n')
-
     #* log args
     config_str = "\n"
     for k, v in vars(args).items():
@@ -114,6 +112,9 @@ def main():
 
     #* train
     log.info("Starting training")
+    #* log sf loss usage
+    if args.use_sf_loss:
+        log.info("\tUsing semantic fidelity loss")
     epoch = 0
     step = 0 # number of total examples we have done (will be epoch * len(data_set) at end of each epoch)
     last_avg_bleu = 0

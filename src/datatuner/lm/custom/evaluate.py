@@ -48,7 +48,7 @@ def main():
     #* load base model and tokenizer
     log.info(f"Loading base model and tokenizer")
     base_model = T5ForConditionalGeneration.from_pretrained(args.model_name)
-    tokenizer = T5Tokenizer.from_pretrained(args.model_name)
+    tokenizer = T5Tokenizer.from_pretrained(args.model_name, model_max_length=512)
 
     #* check and eventually update special_tokens_path
     if not args.special_tokens_path:
