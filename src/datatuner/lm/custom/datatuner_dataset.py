@@ -9,8 +9,10 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__file__)
+
 
 def remove_non_bracketed_keys(sentence: str) -> str:
     """Removes the keywords which are repeated outside of the angle brackets. 
@@ -119,6 +121,7 @@ def read_special_tokens(task_config: Dict, special_tokens_file_path: str) -> Lis
     tokens += ["<data>", "<text>"]
     return tokens
 
+
 def process_viggo_key(key: str) -> str:
     key = key.replace("steam", "Steam")
     key = key.replace("mac", "Mac")
@@ -128,12 +131,14 @@ def process_viggo_key(key: str) -> str:
     key = key.replace("exp", "expected")
     return key
 
+
 def process_e2e_key(key: str) -> str:
     key = key.replace("eatType", "eat type")
     key = key.replace("priceRange", "price range")
     key = key.replace("familyFriendly", "family friendly")
     key = key.replace("customerRating", "customer rating")
     return key
+
 
 def process_data(data: str, dataset: str) -> str:
     key_value_separator = "="
@@ -176,7 +181,8 @@ def process_data(data: str, dataset: str) -> str:
 
 
 class DatatunerDataset(Dataset):
-    def __init__(self, raw_dataset: List[Dict], tokenizer: PreTrainedTokenizer, dataset_name: str,
+    def __init__(self, raw_dataset: List[Dict], tokenizer: PreTrainedTokenizer, 
+            dataset_name: str, dataset_type: str = None,
             data_special_token: str = "data", text_special_token: str = "text",
             max_source_len: int = None, max_target_len: int = None,
             raw_consistency_dataset: List[Dict[str, str]] = None,
@@ -184,6 +190,7 @@ class DatatunerDataset(Dataset):
         self.raw_dataset = raw_dataset
         self.tokenizer = tokenizer
         self.dataset_name = dataset_name
+        self.dataset_type = dataset_type
         self.data_special_token = data_special_token
         self.text_special_token = text_special_token
         self.max_source_len = max_source_len
@@ -198,8 +205,48 @@ class DatatunerDataset(Dataset):
         self.processed_consistency_sentences = []
         if self.raw_consistency_dataset:
             self.process_raw_consistency_sentences()
-        
 
+    def process_raw_dataset(self):
+        """Needs to be implemented by the subclass. 
+            Used to populate: 
+                - processed_sources
+                - processed_targets
+                - raw_sources_values """
+        raise NotImplementedError
+
+    def process_raw_consistency_sentences(self):
+        total_consistency_sentences = []
+        current_target_len = len(self.processed_targets.data["input_ids"][0])
+        for i, entry in enumerate(self.raw_dataset):
+            total_consistency_sentences.append(
+                [cons_data["text"] for cons_data in self.raw_consistency_dataset if entry["data"].strip() == cons_data["data"].strip() and cons_data["label"] not in  ["accurate", "repetition"]]
+                )
+            total_consistency_sentences[i] = total_consistency_sentences[i][:self.max_consistency_sentences]
+        for batch in total_consistency_sentences:
+            curr_processed_consistency_sentences = self.tokenizer(
+                batch, padding="max_length", max_length=current_target_len,
+                return_tensors="pt", truncation=True 
+            )["input_ids"]
+            self.processed_consistency_sentences.append(curr_processed_consistency_sentences)
+
+    def __len__(self) -> int:
+        return len(self.raw_dataset)
+
+    def __getitem__(self, idx) -> Tuple[Dict]:
+        item = {}
+        item["source_data"] = self.raw_dataset[idx]["data"]
+        item["target_text"] = self.raw_dataset[idx]["text"][-1]
+        item["source_input_ids"] = self.processed_sources.data["input_ids"][idx]
+        item["source_attention_mask"] = self.processed_sources.data["attention_mask"][idx]
+        item["target_input_ids"] = self.processed_targets.data["input_ids"][idx]
+        item["target_attention_mask"] = self.processed_targets.data["attention_mask"][idx]
+        item["source_data_values"] = self.raw_sources_values[idx]
+        if self.processed_consistency_sentences:
+            item["consistency_sentences_input_ids"] = self.processed_consistency_sentences[idx]
+        return item
+
+
+class DatatunerDatasetEncDec(DatatunerDataset):
     def process_raw_dataset(self):
         """Builds the input for the model, processing the source with tokenization + conversion to id + padding.
         Since T5 is an encoder/decoder model, the source contains just the DATA and the targets contains the TEXT.
@@ -235,42 +282,66 @@ class DatatunerDataset(Dataset):
             return_tensors="pt", truncation=True 
         )
         self.raw_sources_values = total_source_values
-    
 
-    def process_raw_consistency_sentences(self):
-        total_consistency_sentences = []
-        current_target_len = len(self.processed_targets.data["input_ids"][0])
+
+
+class DatatunerDatasetDecOnly(DatatunerDataset):
+    def process_raw_dataset(self):
+        """In decoder only method, the source must include both the data and the text, while the target
+            is composed of a masked part in the beginning (same len as the data) followed by the text.
+        """
+        total_sources = []
+        total_targets = []
+        total_source_values = []
+        prefix = "from Data to English:"
         for i, entry in enumerate(self.raw_dataset):
-            total_consistency_sentences.append(
-                [cons_data["text"] for cons_data in self.raw_consistency_dataset if entry["data"].strip() == cons_data["data"].strip() and cons_data["label"] not in  ["accurate", "repetition"]]
-                )
-            total_consistency_sentences[i] = total_consistency_sentences[i][:self.max_consistency_sentences]
-        for batch in total_consistency_sentences:
-            curr_processed_consistency_sentences = self.tokenizer(
-                batch, padding="max_length", max_length=current_target_len,
-                return_tensors="pt", truncation=True 
-            )["input_ids"]
-            self.processed_consistency_sentences.append(curr_processed_consistency_sentences)
+            processed_data, values = process_data(entry["data"], self.dataset_name)
+            if "train" in self.dataset_name:
+                total_source_values.append(values)
+                #* build and tokenize the source string (data token + data + text token + text) ([-1] is needed to take the correct sentence)
+                # TODO try prepending prefix
+                source_string = f"<{self.data_special_token}> {processed_data} <{self.text_special_token}> {entry['text'][-1]}"
+                source_string = self.tokenizer(source_string)["input_ids"]
+                total_sources.append(source_string)
+                #* tokenize the text part for the target
+                only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"]
+                #* manually pad the target string on the left to make it the same size of the source text
+                target_string = [
+                    self.tokenizer.pad_token_id for _ in range(len(source_string) - len(only_text_tokens))
+                    ] + only_text_tokens
+                total_targets.append(target_string)
+            else:
+                #* build and tokenize the complete source string (data token + data + text token + text)
+                complete_source_string = f"<{self.data_special_token}> {processed_data} <{self.text_special_token}> {entry['text'][-1]}"
+                complete_source_string = self.tokenizer(complete_source_string)["input_ids"]
+                #* build and tokenize the validation source string (data token + data + text token)
+                val_source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}>"
+                val_source_string = self.tokenizer(val_source_string)["input_ids"]#[:-1] #! <- this leaves out the EOS token
+                #* manually pad the source string on the right to make it the same size of the complete source text
+                val_source_string = val_source_string + [
+                    self.tokenizer.pad_token_id for _ in range(len(complete_source_string) - len(val_source_string))
+                    ] # TODO NEED TO UPDATE ATTENTION MASKS TOO
+                total_sources.append(val_source_string)
+                #* tokenize the text part for the target
+                only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"]
+                #* manually pad the target string on the left to make it the same size of the source text
+                target_string = [
+                    self.tokenizer.pad_token_id for _ in range(len(complete_source_string) - len(only_text_tokens))
+                    ] + only_text_tokens
+        self.processed_sources = self.tokenizer.batch_encode_plus(
+            total_sources, padding=self.source_padding_strategy, max_length=self.max_source_len,
+            return_tensors="pt", truncation=True, is_split_into_words=True
+        )
+        self.processed_targets = self.tokenizer.batch_encode_plus(
+            total_targets, padding=self.target_padding_strategy, max_length=self.max_target_len, 
+            return_tensors="pt", truncation=True, is_split_into_words=True
+        )
+        self.raw_sources_values = total_source_values
 
-
-    def __len__(self) -> int:
-        return len(self.raw_dataset)
-
-    def __getitem__(self, idx) -> Tuple[Dict]:
-        item = {}
-        item["source_data"] = self.raw_dataset[idx]["data"]
-        item["target_text"] = self.raw_dataset[idx]["text"][-1]
-        item["source_input_ids"] = self.processed_sources.data["input_ids"][idx]
-        item["source_attention_mask"] = self.processed_sources.data["attention_mask"][idx]
-        item["target_input_ids"] = self.processed_targets.data["input_ids"][idx]
-        item["target_attention_mask"] = self.processed_targets.data["attention_mask"][idx]
-        item["source_data_values"] = self.raw_sources_values[idx]
-        if self.processed_consistency_sentences:
-            item["consistency_sentences_input_ids"] = self.processed_consistency_sentences[idx]
-        return item
 
 
 def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTrainedTokenizer,
+        model_type: str = "enc_dec",
         dataset_types: List[str] = ["train", "validation"], 
         batch_sizes: Dict[str, int] = {"train": 8, "validation": 8},
         max_source_len: int = None, max_target_len: int = None,
@@ -286,11 +357,21 @@ def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTr
         if consistency_dataset_path:
             current_consistency_dataset_path = os.path.join(consistency_dataset_path, f"{dataset_type}.tsv")
             raw_consistency_dataset = get_consistency_dataset(current_consistency_dataset_path)
-        current_dataset = DatatunerDataset(raw_dataset, tokenizer, dataset_name,
-            max_source_len=max_source_len, max_target_len=max_target_len, 
-            raw_consistency_dataset=raw_consistency_dataset)
-        log.info(current_dataset[0]["source_data"])
-        log.info(current_dataset[0]["target_text"])
+        if model_type == "enc_dec":
+            current_dataset = DatatunerDatasetEncDec(raw_dataset, tokenizer, dataset_name,
+                max_source_len=max_source_len, max_target_len=max_target_len, 
+                raw_consistency_dataset=raw_consistency_dataset)
+        elif model_type == "dec_only":
+            current_dataset = DatatunerDatasetDecOnly(raw_dataset, tokenizer, dataset_name, dataset_type=dataset_type,
+                max_source_len=max_source_len, max_target_len=max_target_len, 
+                raw_consistency_dataset=raw_consistency_dataset)
+        else:
+            raise ValueError(f"Unknown model type {model_type}")
+        log.info("Source data:", current_dataset[0]["source_data"])
+        log.info("Target text:", current_dataset[0]["target_text"])
+        log.info("Source input ids decoded:", tokenizer.decode(current_dataset[0]["source_input_ids"]))
+        log.info("Source data values decoded:", tokenizer.decode(current_dataset[0]["source_data_values"]))
+        log.info("Target input ids decoded:", tokenizer.decode(current_dataset[0]["target_input_ids"]))
         batch_size = batch_sizes[dataset_type]
         data_loaders[dataset_type] = DataLoader(
             current_dataset, batch_size=batch_size, shuffle=bool(dataset_type=="train"))

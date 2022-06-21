@@ -9,12 +9,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 from datatuner.lm.custom import datatuner_dataset, metrics
-from datatuner.lm.custom.custom_models import CustomT5Model
+from datatuner.lm.custom.custom_models import CustomT5Model, CustomOPTModel
 from datatuner.lm.custom.utils import set_seed
 from nltk.translate.bleu_score import sentence_bleu
 from tqdm import tqdm
-from transformers import (Adafactor, AdamW, T5ForConditionalGeneration,
-                          T5Tokenizer, get_linear_schedule_with_warmup)
+from transformers import (T5ForConditionalGeneration, T5Tokenizer,
+                          GPT2Tokenizer, OPTForCausalLM,
+                          get_linear_schedule_with_warmup)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +33,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--save_dir_path", type=str, default="./save", help="Path to the save directory.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
     parser.add_argument("--model_name", type=str, default="t5-base", help="Short name of the model")
+    parser.add_argument("--model_type", type=str, default="enc_dec", help="Model type. Either 'enc_dec' or 'dec_only'.")
     parser.add_argument("--train_batch_size", type=int, default=8, help="Batch size for training")
     parser.add_argument("--val_batch_size", type=int, default=8, help="Batch size for validation")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -40,6 +42,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
     parser.add_argument("--use_sf_loss", action="store_true", help="Whether to use the semantic fidelity loss or not.")
+    parser.add_argument("--sf_loss_alpha", type=float, default=0.0, help="The weight for the semantic fidelity loss.")
     return parser.parse_args()
 
 
@@ -59,8 +62,12 @@ def main():
 
     #* load model and tokenizer
     log.info(f"Loading model and tokenizer")
-    base_model = T5ForConditionalGeneration.from_pretrained(args.model_name)
-    tokenizer = T5Tokenizer.from_pretrained(args.model_name, model_max_length=512)
+    if "t5" in args.model_name:
+        base_model = T5ForConditionalGeneration.from_pretrained(args.model_name)
+        tokenizer = T5Tokenizer.from_pretrained(args.model_name, model_max_length=512)
+    elif "opt" in args.model_name:
+        base_model = OPTForCausalLM.from_pretrained(args.model_name)
+        tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
 
     #* check and eventually update special_tokens_path
     if not args.special_tokens_path:
@@ -73,10 +80,19 @@ def main():
     tokenizer.add_tokens(special_tokens)
     base_model.resize_token_embeddings(len(tokenizer))
 
+    #* get model type
+    if not args.model_type:
+        if "t5" in args.model_name:
+            model_type = "enc_dec"
+        elif "opt" in args.model_name:
+            model_type = "dec_only"
+    else:
+        model_type = args.model_type
+
     #* load dataset as DataLoaders
     log.info(f"Loading dataset from {args.base_dataset_path}")
     train_loader, val_loader = datatuner_dataset.get_data_loaders(
-        args.base_dataset_path, task_config, tokenizer, 
+        args.base_dataset_path, task_config, tokenizer, model_type,
         batch_sizes={"train": args.train_batch_size, "validation": args.val_batch_size},
         consistency_dataset_path=args.consistency_dataset_path)
     log.info(f"Train size: {len(train_loader)} - Val size: {len(val_loader)}")
@@ -97,13 +113,31 @@ def main():
     #     scale_parameter=False,
     #     warmup_init=False,
     # )
-    model = CustomT5Model(base_model, tokenizer, args.device, args.use_sf_loss)
+    if "t5" in args.model_name:
+        model = CustomT5Model(
+            base_model, 
+            tokenizer, 
+            device=args.device, 
+            use_sf_loss=args.use_sf_loss, 
+            sf_loss_alpha=args.sf_loss_alpha
+        )
+    elif "opt" in args.model_name:
+        model = CustomOPTModel(
+            base_model, 
+            tokenizer, 
+            device=args.device, 
+            use_sf_loss=args.use_sf_loss, 
+            sf_loss_alpha=args.sf_loss_alpha
+        )
+    else:
+        raise ValueError(f"Cannot find custom model for {args.model_name}")
     model.to(args.device)
-    optimizer = AdamW(model.parameters(), lr=args.lr, eps=args.adam_epsilon)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=args.adam_epsilon)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=total_steps)
     log.info(f'Device: {args.device}\n'
              f'Total steps: {total_steps}\n'
              f'Total train (# training examples * epochs): {total_train}\n')
+
     #* log args
     config_str = "\n"
     for k, v in vars(args).items():
@@ -114,7 +148,7 @@ def main():
     log.info("Starting training")
     #* log sf loss usage
     if args.use_sf_loss:
-        log.info("\tUsing semantic fidelity loss")
+        log.info(f"\tUsing semantic fidelity loss with alpha={args.sf_loss_alpha}")
     epoch = 0
     step = 0 # number of total examples we have done (will be epoch * len(data_set) at end of each epoch)
     last_avg_bleu = 0

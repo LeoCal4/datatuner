@@ -8,10 +8,10 @@ from typing import *
 import numpy as np
 import torch
 from datatuner.lm.custom import datatuner_dataset, metrics
-from datatuner.lm.custom.custom_models import CustomT5Model
+from datatuner.lm.custom.custom_models import CustomT5Model, CustomOPTModel
 from nltk.translate.bleu_score import sentence_bleu
 from tqdm import tqdm
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from transformers import T5ForConditionalGeneration, T5Tokenizer, OPTForCausalLM, GPT2Tokenizer
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__file__)
@@ -28,6 +28,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--save_dir_path", type=str, default="./save", help="Path to the save directory.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
     parser.add_argument("--model_name", type=str, default="t5-base", help="Short name of the model")
+    parser.add_argument("--model_type", type=str, default="enc_dec", help="Model type. Either 'enc_dec' or 'dec_only'.")
     return parser.parse_args()
 
 
@@ -46,9 +47,14 @@ def main():
     set_seed(args.seed)
 
     #* load base model and tokenizer
+    # TODO refactor
     log.info(f"Loading base model and tokenizer")
-    base_model = T5ForConditionalGeneration.from_pretrained(args.model_name)
-    tokenizer = T5Tokenizer.from_pretrained(args.model_name, model_max_length=512)
+    if "t5" in args.model_name:
+        base_model = T5ForConditionalGeneration.from_pretrained(args.model_name)
+        tokenizer = T5Tokenizer.from_pretrained(args.model_name, model_max_length=512)
+    elif "opt" in args.model_name:
+        base_model = OPTForCausalLM.from_pretrained(args.model_name)
+        tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
 
     #* check and eventually update special_tokens_path
     if not args.special_tokens_path:
@@ -64,14 +70,40 @@ def main():
     log.info(f"Loading model checkpoint")
     base_model.resize_token_embeddings(len(tokenizer))
     checkpoint = torch.load(args.checkpoint_path)
-    model = CustomT5Model(base_model, tokenizer, args.device)
+    if "t5" in args.model_name:
+        model = CustomT5Model(
+            base_model, 
+            tokenizer, 
+            device=args.device, 
+            use_sf_loss=args.use_sf_loss, 
+            sf_loss_alpha=args.sf_loss_alpha
+        )
+    elif "opt" in args.model_name:
+        model = CustomOPTModel(
+            base_model, 
+            tokenizer, 
+            device=args.device, 
+            use_sf_loss=args.use_sf_loss, 
+            sf_loss_alpha=args.sf_loss_alpha
+        )
+    else:
+        raise ValueError(f"Cannot find custom model for {args.model_name}")
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(args.device)
+
+    #* get model type
+    if not args.model_type:
+        if "t5" in args.model_name:
+            model_type = "enc_dec"
+        elif "opt" in args.model_name:
+            model_type = "dec_only"
+    else:
+        model_type = args.model_type
 
     #* load dataset as DataLoaders
     log.info(f"Loading dataset from {args.base_dataset_path}")
     test_loader = datatuner_dataset.get_data_loaders(
-        args.base_dataset_path, task_config, tokenizer,
+        args.base_dataset_path, task_config, tokenizer, model_type,
         dataset_types=["test"], batch_sizes={"test": args.test_batch_size})
     log.info(f"Test size: {len(test_loader)}")
 
