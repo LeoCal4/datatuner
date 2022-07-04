@@ -5,6 +5,7 @@ import re
 import logging
 from typing import Dict, List, Tuple
 
+import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -140,13 +141,13 @@ def process_e2e_key(key: str) -> str:
     return key
 
 
-def process_data(data: str, dataset: str) -> str:
+def process_data(data: str, dataset_name: str) -> str:
     key_value_separator = "="
     slots_separator = "|"
     sentence_separator = "."
     final_sentence = ""
     values = []
-    if dataset == "webnlg":
+    if dataset_name == "webnlg":
         matches = re.findall(r"(<[\w\s]*>)\s*([^<;]*)(;)?", data)
         for match in matches:
             bracketed_key = match[0]
@@ -156,7 +157,7 @@ def process_data(data: str, dataset: str) -> str:
             end_sentence = match[2]
             final_token = slots_separator if not end_sentence else end_sentence
             final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {final_token} "
-    elif dataset == "viggo":
+    elif "viggo" in dataset_name:
         final_sentence = data.split("(")[0].strip() + f" {slots_separator} "
         matches = re.findall(r"(<[\w\s]*>)\s*[\w\s]*:\s*\[\s*([^\]]*)\s*\]", data)
         for match in matches:
@@ -166,7 +167,7 @@ def process_data(data: str, dataset: str) -> str:
             value = match[1].strip()
             values.append(value)
             final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {slots_separator} "
-    elif dataset == "e2e":
+    elif dataset_name == "e2e":
         matches = re.findall(r"(<[\w\s]*>)\s*[\w\s=]*\[\s*([^\]]*)\s*\]", data)
         for match in matches:
             bracketed_key = match[0]
@@ -176,7 +177,7 @@ def process_data(data: str, dataset: str) -> str:
             values.append(value)
             final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {slots_separator} "
     else:
-        raise ValueError(f"No configuration for dataset with name {dataset}")
+        raise ValueError(f"No configuration for dataset with name {dataset_name}")
     return final_sentence[:-2] + sentence_separator, " | ".join(values) + " |"
 
 
@@ -235,11 +236,16 @@ class DatatunerDataset(Dataset):
     def __getitem__(self, idx) -> Tuple[Dict]:
         item = {}
         item["source_data"] = self.raw_dataset[idx]["data"]
-        item["target_text"] = self.raw_dataset[idx]["text"][-1]
+        item["target_text"] = self.raw_dataset[idx]["text"]
+        if type(item["target_text"]) in (list, tuple):
+            item["target_text"] = item["target_text"][-1]
         item["source_input_ids"] = self.processed_sources.data["input_ids"][idx]
         item["source_attention_mask"] = self.processed_sources.data["attention_mask"][idx]
-        item["target_input_ids"] = self.processed_targets.data["input_ids"][idx]
-        item["target_attention_mask"] = self.processed_targets.data["attention_mask"][idx]
+        try:
+            item["target_input_ids"] = self.processed_targets.data["input_ids"][idx]
+            # item["target_attention_mask"] = self.processed_targets.data["attention_mask"][idx]
+        except IndexError:
+            item["target_input_ids"] = self.processed_targets[idx]
         item["source_data_values"] = self.raw_sources_values[idx]
         if self.processed_consistency_sentences:
             item["consistency_sentences_input_ids"] = self.processed_consistency_sentences[idx]
@@ -271,7 +277,10 @@ class DatatunerDatasetEncDec(DatatunerDataset):
             self.raw_dataset[i]["data"] = source_string
             total_sources.append(source_string)
             # e2e does not have a list of candidates but just the sentence as a string, so we check for that
-            target_string = entry['text'][-1] if type(entry['text']) in (tuple, list) else entry['text']
+            if type(entry["text"]) is list or type(entry["text"]) is tuple:
+                target_string = entry['text'][-1]
+            else:
+                target_string = entry['text']
             total_targets.append(target_string)
         self.processed_sources = self.tokenizer(
             total_sources, padding=self.source_padding_strategy, max_length=self.max_source_len,
@@ -296,15 +305,18 @@ class DatatunerDatasetDecOnly(DatatunerDataset):
         prefix = "from Data to English:"
         for i, entry in enumerate(self.raw_dataset):
             processed_data, values = process_data(entry["data"], self.dataset_name)
-            if "train" in self.dataset_name:
-                total_source_values.append(values)
+            total_source_values.append(values)
+            if "train" in self.dataset_type:
                 #* build and tokenize the source string (data token + data + text token + text) ([-1] is needed to take the correct sentence)
                 # TODO try prepending prefix
                 source_string = f"<{self.data_special_token}> {processed_data} <{self.text_special_token}> {entry['text'][-1]}"
                 source_string = self.tokenizer(source_string)["input_ids"]
-                total_sources.append(source_string)
+                total_sources.append(source_string[1:]) #! <- this leaves out the starting EOS token from GPT2/OPT, since it will be readded later
                 #* tokenize the text part for the target
-                only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"]
+                if type(entry["text"]) is list or type(entry["text"]) is tuple:
+                    only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"][1:] #! <- this leaves out the starting EOS token from GPT2/OPT, since it will be readded later
+                else:
+                    only_text_tokens = self.tokenizer(entry["text"])["input_ids"][1:] #! <- this leaves out the starting EOS token from GPT2/OPT, since it will be readded later
                 #* manually pad the target string on the left to make it the same size of the source text
                 target_string = [
                     self.tokenizer.pad_token_id for _ in range(len(source_string) - len(only_text_tokens))
@@ -315,27 +327,39 @@ class DatatunerDatasetDecOnly(DatatunerDataset):
                 complete_source_string = f"<{self.data_special_token}> {processed_data} <{self.text_special_token}> {entry['text'][-1]}"
                 complete_source_string = self.tokenizer(complete_source_string)["input_ids"]
                 #* build and tokenize the validation source string (data token + data + text token)
-                val_source_string = f"<{self.data_special_token}> {entry['data']} <{self.text_special_token}>"
-                val_source_string = self.tokenizer(val_source_string)["input_ids"]#[:-1] #! <- this leaves out the EOS token
+                val_source_string = f"<{self.data_special_token}> {processed_data} <{self.text_special_token}>"
+                val_source_string = self.tokenizer(val_source_string)["input_ids"]
                 #* manually pad the source string on the right to make it the same size of the complete source text
                 val_source_string = val_source_string + [
                     self.tokenizer.pad_token_id for _ in range(len(complete_source_string) - len(val_source_string))
                     ] # TODO NEED TO UPDATE ATTENTION MASKS TOO
-                total_sources.append(val_source_string)
+                total_sources.append(val_source_string[1:]) #! <- this leaves out the starting EOS token from GPT2/OPT, since it will be readded later
                 #* tokenize the text part for the target
-                only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"]
+                if type(entry["text"]) is list or type(entry["text"]) is tuple:
+                    only_text_tokens = self.tokenizer(entry["text"][-1])["input_ids"][1:] #! <- this leaves out the starting EOS token from GPT2/OPT, since it will be readded later
+                else:
+                    only_text_tokens = self.tokenizer(entry["text"])["input_ids"][1:] #! <- this leaves out the starting EOS token from GPT2/OPT, since it will be readded later
                 #* manually pad the target string on the left to make it the same size of the source text
                 target_string = [
                     self.tokenizer.pad_token_id for _ in range(len(complete_source_string) - len(only_text_tokens))
                     ] + only_text_tokens
+                total_targets.append(target_string)
         self.processed_sources = self.tokenizer.batch_encode_plus(
-            total_sources, padding=self.source_padding_strategy, max_length=self.max_source_len,
-            return_tensors="pt", truncation=True, is_split_into_words=True
+            total_sources, padding="longest", 
+            return_tensors="pt", is_split_into_words=True
         )
-        self.processed_targets = self.tokenizer.batch_encode_plus(
-            total_targets, padding=self.target_padding_strategy, max_length=self.max_target_len, 
-            return_tensors="pt", truncation=True, is_split_into_words=True
-        )
+        target_max_length = max([len(entry) for entry in total_sources]) + 1
+        padded_targets = []
+        # TODO change back to tokenizer + remove \s at the start
+        for target in total_targets:
+            target = target + [self.tokenizer.pad_token_id for _ in range(target_max_length - len(target))] 
+            padded_targets.append(target)
+        self.processed_targets = torch.tensor(padded_targets)
+        # log.info(f"processed targets: {self.processed_targets[0]}")
+        # self.processed_targets = self.tokenizer.batch_encode_plus(
+        #     total_targets, padding="max_length", max_length=target_max_length,
+        #     return_tensors="pt", truncation=True, is_split_into_words=True
+        # )
         self.raw_sources_values = total_source_values
 
 
@@ -367,11 +391,13 @@ def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTr
                 raw_consistency_dataset=raw_consistency_dataset)
         else:
             raise ValueError(f"Unknown model type {model_type}")
-        log.info("Source data:", current_dataset[0]["source_data"])
-        log.info("Target text:", current_dataset[0]["target_text"])
-        log.info("Source input ids decoded:", tokenizer.decode(current_dataset[0]["source_input_ids"]))
-        log.info("Source data values decoded:", tokenizer.decode(current_dataset[0]["source_data_values"]))
-        log.info("Target input ids decoded:", tokenizer.decode(current_dataset[0]["target_input_ids"]))
+        log.info(f"Source data: {current_dataset[0]['source_data']}")
+        log.info(f"Source data values: {current_dataset[0]['source_data_values']}")
+        log.info(f"Target text: {current_dataset[0]['target_text']}")
+        log.info(f"Source input ids: {current_dataset[0]['source_input_ids'].shape} - {current_dataset[0]['source_input_ids']}")
+        log.info(f"Source input ids decoded: {tokenizer.decode(current_dataset[0]['source_input_ids'])}")
+        log.info(f"Target input ids: {current_dataset[0]['target_input_ids'].shape} - {current_dataset[0]['target_input_ids']}")
+        log.info(f"Target input ids decoded: {tokenizer.decode(current_dataset[0]['target_input_ids'])}")
         batch_size = batch_sizes[dataset_type]
         data_loaders[dataset_type] = DataLoader(
             current_dataset, batch_size=batch_size, shuffle=bool(dataset_type=="train"))

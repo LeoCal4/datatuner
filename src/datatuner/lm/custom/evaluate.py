@@ -75,16 +75,16 @@ def main():
             base_model, 
             tokenizer, 
             device=args.device, 
-            use_sf_loss=args.use_sf_loss, 
-            sf_loss_alpha=args.sf_loss_alpha
+            # use_sf_loss=args.use_sf_loss, 
+            # sf_loss_alpha=args.sf_loss_alpha
         )
     elif "opt" in args.model_name:
         model = CustomOPTModel(
             base_model, 
             tokenizer, 
             device=args.device, 
-            use_sf_loss=args.use_sf_loss, 
-            sf_loss_alpha=args.sf_loss_alpha
+            # use_sf_loss=args.use_sf_loss, 
+            # sf_loss_alpha=args.sf_loss_alpha
         )
     else:
         raise ValueError(f"Cannot find custom model for {args.model_name}")
@@ -123,7 +123,6 @@ def main():
     with torch.no_grad(), tqdm(total=num_test) as progress_bar:
         for batch_num, batch in enumerate(test_loader):
             batch_size = len(batch["source_input_ids"])
-
             #* generate for token matches
             generated_ids = model.inference(batch)
             #* save for qualitative analysis

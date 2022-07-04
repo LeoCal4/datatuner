@@ -27,9 +27,9 @@ class CustomT5Model(nn.Module):
         if self.use_sf_loss:
             log.info(f"\n\tUsing semantic fidelity loss")
             self.sf_loss_alpha = sf_loss_alpha
-            log.info(f"\n\tLoss: (1-{self.sf_loss_alpha})*CE + {self.sf_loss_alpha}*SM")
+            log.info(f"\n\tLoss: (1-{self.sf_loss_alpha})*CE + {self.sf_loss_alpha}*CE*SM")
 
-    def _inner_forward(self, batch: Dict[str, torch.Tensor], pad_token_id: int = 0):
+    def _inner_forward(self, batch: Dict[str, torch.Tensor]):
         """When we call model() with labels, they will be:
             - automatically right shifted by 1 (for teacher forcing)
             - prepended by BOS=Beginning of sequence which is a PAD token
@@ -47,7 +47,7 @@ class CustomT5Model(nn.Module):
         source_mask = batch["source_attention_mask"].to(self.device, dtype=torch.long)
         target_ids = batch["target_input_ids"].to(self.device, dtype=torch.long)
         #* padded ids are set to -100, so that they are ignored during loss calculation
-        target_ids[target_ids[: ,:] == pad_token_id] = -100
+        target_ids[target_ids[:, :] == self.tokenizer.pad_token_id] = -100
         label_ids = target_ids.to(self.device)
         out_dict = self.model(source_ids, attention_mask=source_mask, labels=label_ids, return_dict=True)
         loss = out_dict[0]
@@ -57,7 +57,7 @@ class CustomT5Model(nn.Module):
     def consistency_loss(self, logits_batches: torch.Tensor, 
                             consistency_sentences_input_ids_batches: torch.Tensor, 
                             labels_batches: torch.Tensor) -> torch.Tensor:
-        loss_func = nn.CrossEntropyLoss(ignore_index=-100)
+        loss_func = nn.CrossEntropyLoss()
         total_consistency_loss = None
         for logits, consistency_sentences_ids, labels_batches in zip(logits_batches, consistency_sentences_input_ids_batches, labels_batches):
             curr_consistency_loss = None
@@ -92,8 +92,7 @@ class CustomT5Model(nn.Module):
                 logits,
                 self.tokenizer
             )
-            loss = (1 - self.sf_loss_alpha) * loss + self.sf_loss_alpha * sf_loss
-            # loss = (1 - self.sf_loss_alpha) * loss + self.sf_loss_alpha * loss * sf_loss
+            loss = (1 - self.sf_loss_alpha) * loss + self.sf_loss_alpha * loss * sf_loss
         return loss
     
     def inference(self, batch: Dict[str, torch.Tensor]):
@@ -140,6 +139,9 @@ class CustomOPTModel(nn.Module):
         source_ids = batch["source_input_ids"].to(self.device, dtype=torch.long)
         source_mask = batch["source_attention_mask"].to(self.device, dtype=torch.long)
         target_ids = batch["target_input_ids"].to(self.device, dtype=torch.long)
+        target_ids[target_ids[:, :] == self.tokenizer.pad_token_id] = -100
+        log.info(f"input: {batch['source_input_ids'].shape}\n{batch['source_input_ids'][0]}")
+        log.info(f"target after -100: {target_ids.shape}\n{target_ids[0]}")
         label_ids = target_ids.to(self.device)
         out_dict = self.model(source_ids, attention_mask=source_mask, labels=label_ids, return_dict=True)
         loss = out_dict[0]
@@ -148,6 +150,12 @@ class CustomOPTModel(nn.Module):
 
     def forward(self, batch: Dict[str, torch.Tensor]):
         loss, logits = self._inner_forward(batch)
+        import torch.nn.functional as F
+        softmaxes = F.softmax(logits, dim=1)
+        _, predictions = torch.max(softmaxes, -1)
+        batch_sentences = self.tokenizer.batch_decode(predictions, skip_special_tokens=False)
+        log.info(f"gen: {predictions.shape}\n{predictions[0]}")
+        log.info(f"gen decoded:\n{batch_sentences[0]}")
         if self.use_consistency_loss:
             loss = self.consistency_loss(
                 logits, 
@@ -167,10 +175,10 @@ class CustomOPTModel(nn.Module):
 
     def inference(self, batch: Dict[str, torch.Tensor]):
         source_ids = batch["source_input_ids"].to(self.device, dtype=torch.long)
-        source_mask = batch["source_attention_mask"].to(self.device, dtype=torch.long)
+        # source_mask = batch["source_attention_mask"].to(self.device, dtype=torch.long) #! WARNING REMOVED MASK
         return self.model.generate(
             source_ids, 
-            attention_mask=source_mask, 
+            # attention_mask=source_mask, 
             max_length=200,
             num_beams=5,
             early_stopping=True,

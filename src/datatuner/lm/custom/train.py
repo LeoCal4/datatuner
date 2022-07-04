@@ -100,7 +100,7 @@ def main():
     #* set up optimizer and scheduler
     num_train = len(train_loader.dataset)
     total_train = num_train * args.epochs
-    total_steps = ( (num_train // args.train_batch_size) * args.epochs) # num times that optim.step() will be called
+    total_steps = ((num_train // args.train_batch_size) * args.epochs) # num times that optim.step() will be called
     # optimizer = Adafactor(
     #     model.parameters(),
     #     lr=1e-3,
@@ -160,6 +160,8 @@ def main():
         model.train()
         with torch.enable_grad(), tqdm(total=num_train) as progress_bar:
             for batch_num, batch in enumerate(train_loader):
+                # log.info(f"input: {tokenizer.decode(batch['source_input_ids'][0])}")
+                # log.info(f"target: {tokenizer.decode(batch['target_input_ids'][0])}")
                 #* forward
                 loss = model(batch)
                 loss_val = loss.item() # get the item since loss is a tensor
@@ -184,14 +186,23 @@ def main():
         model.eval()
         with torch.no_grad(), tqdm(total=num_val) as progress_bar:
             for batch_num, batch in enumerate(val_loader):
+                # if batch_num % 5 == 0:
+                #     log.info(f"input: {batch['source_input_ids'][0]}")
+                    # log.info(f"target: {batch['target_input_ids'][0]}")
                 #* generate for token matches
                 generated_ids = model.inference(batch)
                 #* save for qualitative analysis
                 original_data_inputs = tokenizer.batch_decode(batch["source_input_ids"], skip_special_tokens=True)
                 original_text_targets = tokenizer.batch_decode(batch["target_input_ids"], skip_special_tokens=True)
                 outputs_decoded = np.array(tokenizer.batch_decode(generated_ids, skip_special_tokens=True))
+                # outputs_decoded_no_special_tokens = np.array(tokenizer.batch_decode(generated_ids, skip_special_tokens=False))
                 # they are not divided into batch so we reorder them from (batch size * beam size, sequence size) to (batch, beam, sequence)
                 outputs_decoded = outputs_decoded.reshape(-1, 5)
+                # outputs_decoded_no_special_tokens = outputs_decoded_no_special_tokens.reshape(-1, 5)
+                # if batch_num % 5 == 0:
+                #     log.info(f"gen: {generated_ids.shape}\n{generated_ids[0]}")
+                #     log.info(f"gen dec: {outputs_decoded.shape}\n{outputs_decoded[0][0]}")
+                #     log.info(f"gen dec no sp token: {outputs_decoded_no_special_tokens.shape} \n{outputs_decoded_no_special_tokens[0][0]}")
                 decoded_best_outputs = []
                 decoded_default_choice_outputs = []
                 #* for each group of sentences, keep the first (default) one and the one achieving the highest BLEU
