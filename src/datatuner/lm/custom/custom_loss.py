@@ -166,7 +166,7 @@ def word_based_semantic_fidelity_loss(
         data_tokens_in_pred = 0.1 # avoids 0 division
         for data_token in data_tokens:
             data_tokens_in_pred += int(data_token in predicted)
-        len_ratio = data_tokens_in_target / data_tokens_in_pred
+        len_ratio = max(data_tokens_in_target / data_tokens_in_pred, 1.0)
         total_len_ratios.append(len_ratio)
     mean_ratios = sum(total_len_ratios) / len(total_len_ratios)
     return math.log(mean_ratios)
