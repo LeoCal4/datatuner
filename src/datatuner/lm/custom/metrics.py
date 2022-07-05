@@ -9,16 +9,16 @@ def corpus_level_bleu(model_inputs_and_outputs: List[Tuple[str]]):
 
     Args:
         inputs_and_outputs (List[List[str]]): list of a zip containing both the model's inputs and outputs,
-            specifically: input data, original sentence, default choice generated sentence (also best choice gen sentence, not used here)
+            specifically: input data, original sentence, default choice generated sentence 
 
     Returns:
         Dict[str, float]: dict containing the corpus-level bleu and the number of sentences taken into account 
     """
     grouped_items = {}
     max_num_of_og_sentences = 1
-    for data, original_sentence, generated_sentence, _ in model_inputs_and_outputs:
+    for data, original_sentence, generated_sentence in model_inputs_and_outputs:
         #* take the first sentence among the generated ones, if there are more than one
-        if type(generated_sentence) == list:
+        if type(generated_sentence) == list or type(generated_sentence) == tuple:
             generated_sentence = generated_sentence[0]
 
         #* lowercase sentences

@@ -195,43 +195,24 @@ def main():
                 original_data_inputs = tokenizer.batch_decode(batch["source_input_ids"], skip_special_tokens=True)
                 original_text_targets = tokenizer.batch_decode(batch["target_input_ids"], skip_special_tokens=True)
                 outputs_decoded = np.array(tokenizer.batch_decode(generated_ids, skip_special_tokens=True))
-                # outputs_decoded_no_special_tokens = np.array(tokenizer.batch_decode(generated_ids, skip_special_tokens=False))
                 # they are not divided into batch so we reorder them from (batch size * beam size, sequence size) to (batch, beam, sequence)
-                outputs_decoded = outputs_decoded.reshape(-1, 5)
+                output_beams_decoded = outputs_decoded.reshape(-1, 5)
                 # outputs_decoded_no_special_tokens = outputs_decoded_no_special_tokens.reshape(-1, 5)
                 # if batch_num % 5 == 0:
                 #     log.info(f"gen: {generated_ids.shape}\n{generated_ids[0]}")
                 #     log.info(f"gen dec: {outputs_decoded.shape}\n{outputs_decoded[0][0]}")
                 #     log.info(f"gen dec no sp token: {outputs_decoded_no_special_tokens.shape} \n{outputs_decoded_no_special_tokens[0][0]}")
-                decoded_best_outputs = []
-                decoded_default_choice_outputs = []
-                #* for each group of sentences, keep the first (default) one and the one achieving the highest BLEU
-                for source, generated_beam in zip(original_text_targets, outputs_decoded):
-                    highest_bleu = 0
-                    best_sentence_index = 0
-                    for index, generated in enumerate(generated_beam):
-                        current_bleu = sentence_bleu([source], generated)
-                        if current_bleu > highest_bleu:
-                            best_sentence_index = index
-                            highest_bleu = current_bleu
-                        #* save the first one as the default choice, as in reality we cannot compare with the real sentence
-                        if index == 0: 
-                            default_choice_bleus.append(current_bleu)
-                            decoded_default_choice_outputs.append(generated)
-                    best_choice_bleus.append(highest_bleu)
-                    decoded_best_outputs.append(generated_beam[best_sentence_index])
                 current_predictions = list(zip(
-                    original_data_inputs, original_text_targets, decoded_default_choice_outputs, decoded_best_outputs
+                    original_data_inputs, original_text_targets, output_beams_decoded
                     ))
                 intermediate_predictions.extend(current_predictions)
 
                 #* print one batch of generations for qualitative assessment
                 if batch_num == 0:
-                    data, orig_input, actual_output, best_output = current_predictions[0]
+                    data, orig_input, actual_output = current_predictions[0]
                     log.info(f"\nData: {data}\n"
                             f"\nSource: {orig_input}\n"
-                            f"\nGenerated (default choice): {actual_output}"
-                            f"\nGenerated (best): {best_output}")
+                            f"\nGenerated: {actual_output[0]}")
                 #* log info
                 batch_size = len(batch["source_input_ids"])
                 progress_bar.update(batch_size)
@@ -259,8 +240,8 @@ def main():
     #* save predictions
     to_write = ""
     for prediction_tuple in best_predictions:
-        data, source, default_generated, best_generated = prediction_tuple
-        to_write += f"DATA: {data}\nOG: {source}\nGEN (default): {default_generated}\nGEN (best): {best_generated}\n\n"
+        data, source, default_generated = prediction_tuple
+        to_write += f"DATA: {data}\nOG: {source}\nGEN: {'\n\t'.join(default_generated)}\n\n"
     with open(os.path.join(args.save_dir_path, "predictions.txt"), "w") as f:
         f.write(to_write)
     #* save training/model stats
