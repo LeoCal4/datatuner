@@ -86,7 +86,7 @@ class CustomT5Model(nn.Module):
                 batch["target_input_ids"].to(device=self.device, dtype=torch.long)
             )
         elif self.use_sf_loss:
-            sf_loss = custom_loss.word_based_semantic_fidelity_loss(
+            sf_loss = custom_loss.word_based_semantic_fidelity_loss_with_confidences(
                 batch["source_data_values"],
                 batch["target_text"],
                 logits,

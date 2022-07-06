@@ -170,3 +170,38 @@ def word_based_semantic_fidelity_loss(
         total_len_ratios.append(len_ratio)
     mean_ratios = sum(total_len_ratios) / len(total_len_ratios)
     return math.log(mean_ratios)
+
+
+def word_based_semantic_fidelity_loss_with_confidences(
+    source_data_values: List[str], 
+    target_data: List[str], 
+    logits: torch.Tensor, 
+    tokenizer: PreTrainedTokenizer) -> torch.Tensor:
+    """SM loss which calculates the following:
+        log 1/N SUM_i (conf_i * | intersection(tags, target) | / | intersection(tags, predicted) |)
+    using the natural language version of tags, target and predicted to get their intersection.
+
+    Returns:
+        torch.Tensor
+    """
+    total_len_ratios = []
+    softmaxes = F.softmax(logits, dim=1)
+    confidences, predictions = torch.max(softmaxes, -1)
+    batch_sentences = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    for data, target, predicted in zip(source_data_values, target_data, batch_sentences):
+        #* get all the data values tokens, separating both different slots and slots where more values are separated by a comma
+        data_tokens = list(re.findall(r"\s?([^|,]*)[|,]", data))
+        #* strip tokens and avoid getting "yes" and "no", as they don't provide anything
+        data_tokens = [token.strip() for token in data_tokens if token.strip() not in ["yes", "no"]]
+        data_tokens_in_target = 0.1 # avoids 0 division
+        for data_token in data_tokens:
+            data_tokens_in_target += int(data_token in target)
+        data_tokens_in_pred = 0.1 # avoids 0 division
+        for data_token in data_tokens:
+            data_tokens_in_pred += int(data_token in predicted)
+        len_ratio = max(data_tokens_in_target / data_tokens_in_pred, 1.0)
+        total_len_ratios.append(len_ratio)
+    mean_conf = torch.mean(confidences)
+    mean_ratios = sum(total_len_ratios) / len(total_len_ratios)
+    sf_loss = mean_conf * mean_ratios
+    return math.log(sf_loss)
