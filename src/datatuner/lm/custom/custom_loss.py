@@ -203,5 +203,6 @@ def word_based_semantic_fidelity_loss_with_confidences(
         total_len_ratios.append(len_ratio)
     mean_conf = torch.mean(confidences)
     mean_ratios = sum(total_len_ratios) / len(total_len_ratios)
-    sf_loss = mean_conf * mean_ratios
-    return math.log(sf_loss)
+    sf_loss = mean_conf * mean_ratios)
+    log.info(f"SF loss: {sf_loss}"
+    return sf_loss

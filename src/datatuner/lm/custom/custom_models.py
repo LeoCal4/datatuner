@@ -25,9 +25,9 @@ class CustomT5Model(nn.Module):
             self.consistency_loss_weight = consistency_loss_weight
         self.use_sf_loss = use_sf_loss
         if self.use_sf_loss:
-            log.info(f"\n\tUsing semantic fidelity loss")
+            log.info(f"\n\tUsing semantic fidelity loss with confidences")
             self.sf_loss_alpha = sf_loss_alpha
-            log.info(f"\n\tLoss: (1-{self.sf_loss_alpha})*CE + {self.sf_loss_alpha}*CE*SM")
+            log.info(f"\n\tLoss: (1-{self.sf_loss_alpha})*CE + {self.sf_loss_alpha}*SF")
 
     def _inner_forward(self, batch: Dict[str, torch.Tensor]):
         """When we call model() with labels, they will be:
