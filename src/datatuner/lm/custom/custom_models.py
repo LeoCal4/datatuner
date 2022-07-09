@@ -49,6 +49,7 @@ class CustomT5Model(nn.Module):
         #* padded ids are set to -100, so that they are ignored during loss calculation
         target_ids[target_ids[:, :] == self.tokenizer.pad_token_id] = -100
         label_ids = target_ids.to(self.device)
+        # out_dict = self.model(source_ids, labels=label_ids, return_dict=True)
         out_dict = self.model(source_ids, attention_mask=source_mask, labels=label_ids, return_dict=True)
         loss = out_dict[0]
         logits = out_dict[1]

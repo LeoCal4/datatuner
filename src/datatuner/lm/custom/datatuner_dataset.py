@@ -235,7 +235,7 @@ class DatatunerDataset(Dataset):
 
     def __getitem__(self, idx) -> Tuple[Dict]:
         item = {}
-        item["source_data"] = self.raw_dataset[idx]["data"]
+        # item["source_data"] = self.raw_dataset[idx]["data"] #! REMOVED for memory issues
         item["target_text"] = self.raw_dataset[idx]["text"]
         if type(item["target_text"]) in (list, tuple):
             item["target_text"] = item["target_text"][-1]

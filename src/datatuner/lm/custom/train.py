@@ -11,7 +11,6 @@ import torch.nn as nn
 from datatuner.lm.custom import datatuner_dataset, metrics
 from datatuner.lm.custom.custom_models import CustomT5Model, CustomOPTModel
 from datatuner.lm.custom.utils import set_seed
-from nltk.translate.bleu_score import sentence_bleu
 from tqdm import tqdm
 from transformers import (T5ForConditionalGeneration, T5Tokenizer,
                           GPT2Tokenizer, OPTForCausalLM,
@@ -160,11 +159,8 @@ def main():
         model.train()
         with torch.enable_grad(), tqdm(total=num_train) as progress_bar:
             for batch_num, batch in enumerate(train_loader):
-                # log.info(f"input: {tokenizer.decode(batch['source_input_ids'][0])}")
-                # log.info(f"target: {tokenizer.decode(batch['target_input_ids'][0])}")
                 #* forward
                 loss = model(batch)
-                loss_val = loss.item() # get the item since loss is a tensor
                 #* backward
                 optimizer.zero_grad()
                 loss.backward()
@@ -175,20 +171,16 @@ def main():
                 batch_size = len(batch["source_input_ids"])
                 step += batch_size
                 progress_bar.update(batch_size)
+                loss_val = loss.item() # get the item since loss is a tensor
                 progress_bar.set_postfix(epoch=epoch, loss=loss_val)
 
         #* evaluate
         log.info(f'Evaluating at step {step}...')
         intermediate_predictions = []
-        best_choice_bleus = []
-        default_choice_bleus = []
         num_val = len(val_loader.dataset)
         model.eval()
         with torch.no_grad(), tqdm(total=num_val) as progress_bar:
             for batch_num, batch in enumerate(val_loader):
-                # if batch_num % 5 == 0:
-                #     log.info(f"input: {batch['source_input_ids'][0]}")
-                    # log.info(f"target: {batch['target_input_ids'][0]}")
                 #* generate for token matches
                 generated_ids = model.inference(batch)
                 #* save for qualitative analysis
@@ -199,9 +191,7 @@ def main():
                 output_beams_decoded = outputs_decoded.reshape(-1, 5)
                 # outputs_decoded_no_special_tokens = outputs_decoded_no_special_tokens.reshape(-1, 5)
                 # if batch_num % 5 == 0:
-                #     log.info(f"gen: {generated_ids.shape}\n{generated_ids[0]}")
                 #     log.info(f"gen dec: {outputs_decoded.shape}\n{outputs_decoded[0][0]}")
-                #     log.info(f"gen dec no sp token: {outputs_decoded_no_special_tokens.shape} \n{outputs_decoded_no_special_tokens[0][0]}")
                 current_predictions = list(zip(
                     original_data_inputs, original_text_targets, output_beams_decoded
                     ))
@@ -219,6 +209,7 @@ def main():
 
         #* compute the average BLEU score
         current_corpus_bleu_score = metrics.corpus_level_bleu(intermediate_predictions)
+        current_corpus_rouge_score = metrics.corpus_level_rogue(intermediate_predictions)
         log.info(f"BLEU at end of epoch {epoch}: {current_corpus_bleu_score:.3f}")
         #* check if the model got worse and stop training in that case
         if current_corpus_bleu_score < last_avg_bleu:
@@ -228,7 +219,8 @@ def main():
         log.info("Current version of the model is better than the previous ones, saving...")
         log.info("===============================================================")
         last_avg_bleu = current_corpus_bleu_score
-        best_loss = loss
+        best_rouge = current_corpus_rouge_score
+        best_loss = loss.item() # saving just the item() to save memory
         best_epoch = epoch
         best_predictions = intermediate_predictions
         # state_dict is deepcopied since otherwise it would get updated with the model training
@@ -241,20 +233,24 @@ def main():
     to_write = ""
     for prediction_tuple in best_predictions:
         data, source, default_generated = prediction_tuple
-        to_write += f"DATA: {data}\nOG: {source}\nGEN: {'\n\t'.join(default_generated)}\n\n"
+        generated_string = '\n\t'.join(default_generated)
+        to_write += f"DATA: {data}\nOG: {source}\nGEN: {generated_string}\n\n"
     with open(os.path.join(args.save_dir_path, "predictions.txt"), "w") as f:
         f.write(to_write)
     #* save training/model stats
     with open(os.path.join(args.save_dir_path, "stats.txt"), "w") as f:
-        f.write(f"Training ended at epoch {best_epoch}\nLoss {best_loss.item():.5f}\nAvg final BLEU: {last_avg_bleu:.5f}")
+        f.write(f"Training ended at epoch {best_epoch}\n"
+                f"Loss {best_loss:.5f}\n"
+                f"Final BLEU: {last_avg_bleu:.5f}\n"
+                f"Final Rouge: {best_rouge:.5f}")
     #* save model
     torch.save({
         "epoch": best_epoch,
         "model_state_dict": best_model_state_dict,
         'optimizer_state_dict': optimizer.state_dict(),
-        'loss': loss
+        # 'loss': loss #! REMOVED to save memory
     }, os.path.join(args.save_dir_path, "model_params.tar"))
-    log.info(f"Training complete! Final loss: {best_loss.item():.5f} - Final avg BLEU: {last_avg_bleu:.5f}")
+    log.info(f"Training complete! Final loss: {best_loss:.5f} - Final avg BLEU: {last_avg_bleu:.5f} - Final Rouge {best_rouge:.5f}")
 
 
 if __name__ == '__main__':
