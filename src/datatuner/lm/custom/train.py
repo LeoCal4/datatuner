@@ -209,7 +209,6 @@ def main():
 
         #* compute the average BLEU score
         current_corpus_bleu_score = metrics.corpus_level_bleu(intermediate_predictions)
-        current_corpus_rouge_score = metrics.corpus_level_rogue(intermediate_predictions)
         log.info(f"BLEU at end of epoch {epoch}: {current_corpus_bleu_score:.3f}")
         #* check if the model got worse and stop training in that case
         if current_corpus_bleu_score < last_avg_bleu:
@@ -219,7 +218,6 @@ def main():
         log.info("Current version of the model is better than the previous ones, saving...")
         log.info("===============================================================")
         last_avg_bleu = current_corpus_bleu_score
-        best_rouge = current_corpus_rouge_score
         best_loss = loss.item() # saving just the item() to save memory
         best_epoch = epoch
         best_predictions = intermediate_predictions
@@ -230,19 +228,27 @@ def main():
     log.info(f"Saving predictions and model at {args.save_dir_path}")
     os.makedirs(args.save_dir_path, exist_ok=True)
     #* save predictions
-    to_write = ""
+    predictions = []
     for prediction_tuple in best_predictions:
-        data, source, default_generated = prediction_tuple
-        generated_string = '\n\t'.join(default_generated)
-        to_write += f"DATA: {data}\nOG: {source}\nGEN: {generated_string}\n\n"
-    with open(os.path.join(args.save_dir_path, "predictions.txt"), "w") as f:
-        f.write(to_write)
+        data, source, generated_beam = prediction_tuple
+        predictions.append({"data": data, "ref": source, "gen": generated_beam.tolist()})
+    with open(os.path.join(args.save_dir_path, "predictions.json"), "w", encoding="utf-8") as f:
+        json.dump(predictions, f, sort_keys=False, indent=4, ensure_ascii=False)
+    #* calculate metrics
+    chrf_score = metrics.corpus_level_chrf(best_predictions)
+    ter_score = metrics.corpus_level_ter(best_predictions)
+    rouge_score = metrics.corpus_level_rogue(best_predictions)
+    meteor_score = metrics.corpus_level_meteor(best_predictions)
+    metric_compendium = f"""Training ended at epoch {best_epoch}
+Loss {best_loss:.5f}
+BLEU: {last_avg_bleu:.5f}
+Rouge: {rouge_score:.5f}
+Meteor: {meteor_score:.5f}
+CHRF: {chrf_score:.5f}
+TER: {ter_score:.5f}"""
     #* save training/model stats
     with open(os.path.join(args.save_dir_path, "stats.txt"), "w") as f:
-        f.write(f"Training ended at epoch {best_epoch}\n"
-                f"Loss {best_loss:.5f}\n"
-                f"Final BLEU: {last_avg_bleu:.5f}\n"
-                f"Final Rouge: {best_rouge:.5f}")
+        f.write(metric_compendium)
     #* save model
     torch.save({
         "epoch": best_epoch,
@@ -250,7 +256,7 @@ def main():
         'optimizer_state_dict': optimizer.state_dict(),
         # 'loss': loss #! REMOVED to save memory
     }, os.path.join(args.save_dir_path, "model_params.tar"))
-    log.info(f"Training complete! Final loss: {best_loss:.5f} - Final avg BLEU: {last_avg_bleu:.5f} - Final Rouge {best_rouge:.5f}")
+    log.info(metric_compendium)
 
 
 if __name__ == '__main__':

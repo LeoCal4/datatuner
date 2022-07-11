@@ -145,22 +145,31 @@ def main():
             #* log info
             progress_bar.update(batch_size)
 
-
     #* create the save/output folder (by default it's the one in which the checkpoint is found, so it's already there)
     log.info(f"Saving predictions and results at {args.save_dir_path}")
     os.makedirs(args.save_dir_path, exist_ok=True)
     #* save predictions and organize data for bleu
-    to_write = ""
+    predictions = []
     for prediction_tuple in inputs_and_predictions:
-        data, source, default_generated = prediction_tuple
-        to_write += f"DATA: {data}\nOG: {source}\nGEN: {default_generated}\n\n"
-    with open(os.path.join(args.save_dir_path, "test_predictions.txt"), "w") as f:
-        f.write(to_write)
-    #* compute the corpus_level BLEU score and save them
+        data, source, generated_beam = prediction_tuple
+        predictions.append({"data": data, "ref": source, "gen": generated_beam.tolist()})
+    with open(os.path.join(args.save_dir_path, "test_predictions.json"), "w", encoding="utf-8") as f:
+        json.dump(predictions, f, sort_keys=False, indent=4, ensure_ascii=False)
+    #* calculate metrics and save them
     corpus_bleu_score = metrics.corpus_level_bleu(inputs_and_predictions)
+    chrf_score = metrics.corpus_level_chrf(inputs_and_predictions)
+    ter_score = metrics.corpus_level_ter(inputs_and_predictions)
+    rouge_score = metrics.corpus_level_rogue(inputs_and_predictions)
+    meteor_score = metrics.corpus_level_meteor(inputs_and_predictions)
+    metric_compendium = f"""Evaluation completed!
+BLEU: {corpus_bleu_score:.5f}
+Rouge: {rouge_score:.5f}
+Meteor: {meteor_score:.5f}
+CHRF: {chrf_score:.5f}
+TER: {ter_score:.5f}"""
     with open(os.path.join(args.save_dir_path, "test_stats.txt"), "w") as f:
-        f.write(f"EVALUATION:\nCorpus BLEU: {corpus_bleu_score:.5f}")
-    log.info(f"Evaluation complete! Corpus BLEU: {corpus_bleu_score:.5f}")
+        f.write(metric_compendium)
+    log.info(metric_compendium)
 
 
 if __name__ == "__main__":
