@@ -49,8 +49,8 @@ def remove_non_bracketed_keys(sentence: str) -> str:
     return " ".join(tokenized_sentence)
 
 
-def get_raw_dataset(filename: str, task_config: Dict) -> List[Dict]:
-    """Reads the dataset from the file specified at filename, using 
+def get_datatuner_processed_dataset(filename: str, task_config: Dict) -> List[Dict]:
+    """Reads the Datatuner-processed dataset from the file specified at filename, using 
     the information contained in task_config.
 
     Args:
@@ -71,6 +71,8 @@ def get_raw_dataset(filename: str, task_config: Dict) -> List[Dict]:
 
     #* iterate over data
     raw_dataset = []
+    if "original_data" in task_config:
+        original_data_key_name = task_config["original_data"]
     for _, raw_data_point in enumerate(tqdm(data)):
         item = {}
         #* iterate on the text field of the current data point
@@ -82,9 +84,12 @@ def get_raw_dataset(filename: str, task_config: Dict) -> List[Dict]:
         # if item[NEW_TEXT_FIELD_NAMES[0]] == "":
         #     continue
         #* add any needed extra_field
-        if "extra_fields" in task_config: # found in webnlg
-            for extra_field in task_config["extra_fields"]:
-                item[extra_field] = raw_data_point[extra_field]
+        # if "extra_fields" in task_config: # found in webnlg
+        #     for extra_field in task_config["extra_fields"]:
+        #         item[extra_field] = raw_data_point[extra_field]
+        
+        if "original_data" in task_config:
+            item["original_data"] = raw_data_point[original_data_key_name]
 
         raw_dataset.append(item)
     return raw_dataset
@@ -235,7 +240,8 @@ class DatatunerDataset(Dataset):
 
     def __getitem__(self, idx) -> Tuple[Dict]:
         item = {}
-        item["source_data"] = self.raw_dataset[idx]["data"]
+        item["original_data"] = self.raw_dataset[idx]["original_data"]
+        item["processed_data"] = self.raw_dataset[idx]["data"]
         item["target_text"] = self.raw_dataset[idx]["text"]
         if type(item["target_text"]) in (list, tuple):
             item["target_text"] = item["target_text"][-1]
@@ -376,7 +382,7 @@ def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTr
     dataset_name = base_dataset_path.split(os.sep)[-1]
     for dataset_type in dataset_types:
         current_dataset_path = os.path.join(base_dataset_path, f"{dataset_type}.json")
-        raw_dataset = get_raw_dataset(current_dataset_path, task_config)
+        raw_dataset = get_datatuner_processed_dataset(current_dataset_path, task_config)
         raw_consistency_dataset = None
         if consistency_dataset_path:
             current_consistency_dataset_path = os.path.join(consistency_dataset_path, f"{dataset_type}.tsv")
@@ -391,7 +397,7 @@ def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTr
                 raw_consistency_dataset=raw_consistency_dataset)
         else:
             raise ValueError(f"Unknown model type {model_type}")
-        log.info(f"Source data: {current_dataset[0]['source_data']}")
+        log.info(f"Source data: {current_dataset[0]['processed_data']}")
         log.info(f"Source data values: {current_dataset[0]['source_data_values']}")
         log.info(f"Target text: {current_dataset[0]['target_text']}")
         log.info(f"Source input ids: {current_dataset[0]['source_input_ids'].shape} - {current_dataset[0]['source_input_ids']}")

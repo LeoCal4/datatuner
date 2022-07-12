@@ -35,6 +35,7 @@
         "category_type",
         "category",
         "num_triples"
-    ]
+    ],
+    "original_data": "raw_modifiedtripleset"
 }
 
