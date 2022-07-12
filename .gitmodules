@@ -1,0 +1,3 @@
+[submodule "src/datatuner/lm/custom/libs/data2text-nlg"]
+	path = src/datatuner/lm/custom/libs/data2text-nlg
+	url = https://github.com/LeoCal4/data2text-nlg.git
