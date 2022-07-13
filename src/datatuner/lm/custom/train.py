@@ -23,14 +23,17 @@ log = logging.getLogger(__file__)
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    #* ==== General ====
     parser.add_argument("--seed", type=int, default=42, help="Seed")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
+    #* ==== Dataset and model paths ====
     parser.add_argument("--base_dataset_path", type=str, help="Path of the dataset.")
     parser.add_argument("--consistency_dataset_path", type=str, default=None, help="Path of the consistency dataset.")
     parser.add_argument("--task_config_path", type=str, help="Path to the tokenization config file")
     parser.add_argument("--special_tokens_path", type=str, default=None, help="Path to the special tokens file")
     parser.add_argument("--train_params_path", type=str, help="JSON file with training parameters.")
     parser.add_argument("--save_dir_path", type=str, default="./save", help="Path to the save directory.")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
+    #* ==== Model info and params ====
     parser.add_argument("--model_name", type=str, default="t5-base", help="Short name of the model")
     parser.add_argument("--model_type", type=str, default="enc_dec", help="Model type. Either 'enc_dec' or 'dec_only'.")
     parser.add_argument("--train_batch_size", type=int, default=8, help="Batch size for training")
@@ -40,8 +43,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Clipping gradient norm")
     parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
+    #* ==== SF loss ====
     parser.add_argument("--use_sf_loss", action="store_true", help="Whether to use the semantic fidelity loss or not.")
     parser.add_argument("--sf_loss_alpha", type=float, default=0.0, help="The weight for the semantic fidelity loss.")
+    #* ==== DCS loss ====
+    parser.add_argument("--use_dcs_loss", action="store_true", help="Whether to use the DCS agumented loss or not.")
+    parser.add_argument("--dcs_beta", type=float, default=0.0, help="The weight for the DCS loss.")
     return parser.parse_args()
 
 
@@ -113,23 +120,23 @@ def main():
     #     warmup_init=False,
     # )
     if "t5" in args.model_name:
-        model = CustomT5Model(
-            base_model, 
-            tokenizer, 
-            device=args.device, 
-            use_sf_loss=args.use_sf_loss, 
-            sf_loss_alpha=args.sf_loss_alpha
-        )
+        model_class = CustomT5Model
     elif "opt" in args.model_name:
-        model = CustomOPTModel(
-            base_model, 
-            tokenizer, 
-            device=args.device, 
-            use_sf_loss=args.use_sf_loss, 
-            sf_loss_alpha=args.sf_loss_alpha
-        )
+        model_class = CustomOPTModel
     else:
         raise ValueError(f"Cannot find custom model for {args.model_name}")
+    dataset_name = args.base_dataset_path.split(os.sep)[-1] #TODO find a cleaner way to do this
+    model = model_class(
+        base_model, 
+        tokenizer, 
+        device=args.device, 
+        use_sf_loss=args.use_sf_loss, 
+        sf_loss_alpha=args.sf_loss_alpha,
+        use_dcs_loss=args.use_dcs_loss,
+        dcs_beta=args.dcs_beta,
+        current_dataset=dataset_name #needed for dcs
+    )
+
     model.to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=args.adam_epsilon)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=total_steps)

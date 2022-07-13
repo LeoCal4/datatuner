@@ -73,6 +73,7 @@ def get_datatuner_processed_dataset(filename: str, task_config: Dict) -> List[Di
     raw_dataset = []
     if "original_data" in task_config:
         original_data_key_name = task_config["original_data"]
+        log.info("Adding original data to dataset entries")
     for _, raw_data_point in enumerate(tqdm(data)):
         item = {}
         #* iterate on the text field of the current data point

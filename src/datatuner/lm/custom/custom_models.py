@@ -12,14 +12,16 @@ log = logging.getLogger(__file__)
 
 
 class CustomT5Model(nn.Module):
-    def __init__(self, model, tokenizer, device="cuda", 
+    def __init__(self, model, tokenizer, device="cuda", current_dataset: str ="",
         use_consistency_loss: bool = False, consistency_loss_weight: float = 0.1, 
-        use_sf_loss: bool = False, sf_loss_alpha: float = 0.5) -> None:
+        use_sf_loss: bool = False, sf_loss_alpha: float = 0.5,
+        use_dcs_loss: bool = False, dcs_beta: float = 1.0) -> None:
         super(CustomT5Model, self).__init__()
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
         self.use_consistency_loss = use_consistency_loss
+        self.current_dataset = current_dataset
         if self.use_consistency_loss:
             log.info(f"\n\tUsing consistency loss")
             self.consistency_loss_weight = consistency_loss_weight
@@ -28,6 +30,12 @@ class CustomT5Model(nn.Module):
             log.info(f"\n\tUsing semantic fidelity loss with confidences")
             self.sf_loss_alpha = sf_loss_alpha
             log.info(f"\n\tLoss: (1-{self.sf_loss_alpha})*CE + {self.sf_loss_alpha}*SF")
+        self.use_dcs_loss = use_dcs_loss
+        if self.use_dcs_loss:
+            log.info(f"\n\tUsing DCS agumented loss with beta = {dcs_beta}")
+            self.dcs_beta = dcs_beta
+            log.info(f"\n\tLoss: CE + {self.dcs_beta}*DCS")
+
 
     def _inner_forward(self, batch: Dict[str, torch.Tensor]):
         """When we call model() with labels, they will be:
@@ -94,6 +102,14 @@ class CustomT5Model(nn.Module):
                 self.tokenizer
             )
             loss = (1 - self.sf_loss_alpha) * loss + self.sf_loss_alpha * loss * sf_loss
+        elif self.use_dcs_loss:
+            dcs = custom_loss.calculate_dcs(
+                logits,
+                batch["original_data"],
+                self.tokenizer,
+                self.current_dataset
+            )
+            loss = loss + self.dcs_beta * dcs
         return loss
     
     def inference(self, batch: Dict[str, torch.Tensor]):

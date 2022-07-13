@@ -3,9 +3,20 @@ import math
 import re
 from typing import List, Union
 
+#! this is terrible but there is no other easy way
+import sys
+import os
+custom_dir_path = os.path.dirname(os.path.abspath(__file__))
+ser_dir_path = os.path.join(custom_dir_path, "libs", "data2text-nlp")
+sys.path.append(ser_dir_path)
+import ser_calculator
+
+
 import torch
 import torch.nn.functional as F
 from transformers.tokenization_utils import PreTrainedTokenizer
+
+
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__file__)
@@ -207,3 +218,12 @@ def word_based_semantic_fidelity_loss_with_confidences(
     # sf_loss = torch.log(sf_loss_pre_log)
     # log.info(f"SF loss: {mean_conf} * {mean_ratios} = {sf_loss_pre_log} => {sf_loss}")
     return sf_loss_pre_log
+
+
+def calculate_dcs(logits: torch.Tensor, original_data: List[str], tokenizer: PreTrainedTokenizer, dataset_name: str) -> torch.Tensor:
+    softmaxes = F.softmax(logits, dim=1)
+    confidences, predictions = torch.max(softmaxes, -1)
+    batch_sentences = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    ser_value = ser_calculator.calculate_ser(original_data, batch_sentences, dataset_name)
+    mean_conf = torch.mean(confidences)
+    return torch.abs((1.0-ser_value) - mean_conf)
