@@ -7,9 +7,8 @@ from typing import *
 
 import numpy as np
 import torch
-from datatuner.lm.custom import datatuner_dataset, metrics
-from datatuner.lm.custom.custom_models import CustomT5Model, CustomOPTModel
-from nltk.translate.bleu_score import sentence_bleu
+from datatuner.lm.custom import datatuner_dataset, metrics, utils
+from datatuner.lm.custom.custom_models import DatatunerModel
 from tqdm import tqdm
 from transformers import T5ForConditionalGeneration, T5Tokenizer, OPTForCausalLM, GPT2Tokenizer
 
@@ -55,6 +54,8 @@ def main():
     elif "opt" in args.model_name:
         base_model = OPTForCausalLM.from_pretrained(args.model_name)
         tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
+    else:
+        raise ValueError(f"Cannot find custom model for {args.model_name}")
 
     #* check and eventually update special_tokens_path
     if not args.special_tokens_path:
@@ -70,24 +71,14 @@ def main():
     log.info(f"Loading model checkpoint")
     base_model.resize_token_embeddings(len(tokenizer))
     checkpoint = torch.load(args.checkpoint_path)
-    if "t5" in args.model_name:
-        model = CustomT5Model(
-            base_model, 
-            tokenizer, 
-            device=args.device, 
-            # use_sf_loss=args.use_sf_loss, 
-            # sf_loss_alpha=args.sf_loss_alpha
-        )
-    elif "opt" in args.model_name:
-        model = CustomOPTModel(
-            base_model, 
-            tokenizer, 
-            device=args.device, 
-            # use_sf_loss=args.use_sf_loss, 
-            # sf_loss_alpha=args.sf_loss_alpha
-        )
-    else:
-        raise ValueError(f"Cannot find custom model for {args.model_name}")
+    model = DatatunerModel(
+        base_model, 
+        tokenizer, 
+        device=args.device, 
+        # use_sf_loss=args.use_sf_loss, 
+        # sf_loss_alpha=args.sf_loss_alpha
+    )
+
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(args.device)
 
@@ -116,8 +107,7 @@ def main():
     #* evaluate
     log.info(f"Starting evaluation")
     inputs_and_predictions = []
-    best_choice_bleus = []
-    default_choice_bleus = []
+    original_data_inputs = []
     num_test = len(test_loader.dataset)
     model.eval()
     with torch.no_grad(), tqdm(total=num_test) as progress_bar:
@@ -126,16 +116,16 @@ def main():
             #* generate for token matches
             generated_ids = model.inference(batch)
             #* save for qualitative analysis
-            original_data_inputs = tokenizer.batch_decode(batch["source_input_ids"], skip_special_tokens=True)
-            original_text_targets = tokenizer.batch_decode(batch["target_input_ids"], skip_special_tokens=True)
+            data_inputs = tokenizer.batch_decode(batch["source_input_ids"], skip_special_tokens=True)
+            text_targets = tokenizer.batch_decode(batch["target_input_ids"], skip_special_tokens=True)
             outputs_decoded = np.array(tokenizer.batch_decode(generated_ids, skip_special_tokens=True))
             # they are not divided into batch so we reorder them from (batch size * beam size, sequence size) to (batch, beam, sequence)
             output_beams_decoded = outputs_decoded.reshape(-1, 5)
             current_predictions = list(zip(
-                original_data_inputs, original_text_targets, output_beams_decoded
+                data_inputs, text_targets, output_beams_decoded
                 ))
             inputs_and_predictions.extend(current_predictions)
-
+            original_data_inputs.extend(batch["original_data"])
             #* print one batch of generations for qualitative assessment
             if batch_num == 0:
                 data, orig_input, actual_output = current_predictions[0]
@@ -156,20 +146,17 @@ def main():
     with open(os.path.join(args.save_dir_path, "test_predictions.json"), "w", encoding="utf-8") as f:
         json.dump(predictions, f, sort_keys=False, indent=4, ensure_ascii=False)
     #* calculate metrics and save them
-    corpus_bleu_score = metrics.corpus_level_bleu(inputs_and_predictions)
-    chrf_score = metrics.corpus_level_chrf(inputs_and_predictions)
-    ter_score = metrics.corpus_level_ter(inputs_and_predictions)
-    rouge_score = metrics.corpus_level_rogue(inputs_and_predictions)
-    meteor_score = metrics.corpus_level_meteor(inputs_and_predictions)
-    metric_compendium = f"""Evaluation completed!
-BLEU: {corpus_bleu_score:.5f}
-Rouge: {rouge_score:.5f}
-Meteor: {meteor_score:.5f}
-CHRF: {chrf_score:.5f}
-TER: {ter_score:.5f}"""
-    with open(os.path.join(args.save_dir_path, "test_stats.txt"), "w") as f:
-        f.write(metric_compendium)
-    log.info(metric_compendium)
+    dataset_name = args.base_dataset_path.split(os.sep)[-1] #TODO find a cleaner way to do this
+    metrics_compendium = metrics.create_metrics_compendium(
+        inputs_and_predictions, 
+        original_data=original_data_inputs, 
+        dataset_name=dataset_name
+    )
+    with open(os.path.join(args.save_dir_path, "test_stats.json"), "w", encoding="utf-8") as f:
+        json.dump(metrics_compendium, f, sort_keys=False, indent=4, ensure_ascii=False)
+    formatted_metrics_compendium = utils.format_metrics_compendium(metrics_compendium)
+    formatted_metrics_compendium = f"Evaluation completed!\n{formatted_metrics_compendium}"
+    log.info(formatted_metrics_compendium)
 
 
 if __name__ == "__main__":

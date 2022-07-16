@@ -1,10 +1,11 @@
-from typing import List, Tuple, Dict
+from typing import Dict, List, Tuple
 
-import sacrebleu 
-from rouge_metric import PyRouge
-# from moverscore_v2 import get_idf_dict, word_mover_score
-import nltk 
+import sacrebleu
+from datatuner.lm.custom.utils import import_ser_calculator
 from nltk.translate.meteor_score import meteor_score
+from rouge_metric import PyRouge
+
+ser_calculator = import_ser_calculator()
 
 
 def group_inputs_and_outputs_by_data(model_inputs_and_outputs: List[Tuple[str, str, List[str]]]) -> Tuple[List[List[str]], List[str]]:
@@ -134,8 +135,6 @@ def corpus_level_ter(model_inputs_and_outputs: List[Tuple[str, str, List[str]]])
 def corpus_level_meteor(model_inputs_and_outputs: List[Tuple[str, str, List[str]]]) -> float:
     grouped_items = group_inputs_and_outputs_by_data(model_inputs_and_outputs)
     references, hypotheses = extract_refs_and_hyps_from_grouped_items(grouped_items)
-    # references = [[nltk.word_tokenize(ref) for ref in ref_group] for ref_group in references]
-    # hypotheses = [nltk.word_tokenize(hyp) for hyp in hypotheses]
     scores = []
     for refs, hyp in zip(references, hypotheses):
         scores.append(meteor_score(refs, hyp))
@@ -150,12 +149,59 @@ def corpus_level_rogue(model_inputs_and_outputs: List[Tuple[str, str, List[str]]
     return scores["rouge-l"]["f"]*100
 
 
-# def corpus_level_mover_score(model_inputs_and_outputs: List[Tuple[str, str, List[str]]]) -> float:
-#     grouped_items = group_inputs_and_outputs_by_data(model_inputs_and_outputs)
-#     references, hypotheses = extract_refs_and_hyps_from_grouped_items(grouped_items)
-#     idf_dict_pred = get_idf_dict(hypotheses)
-#     idf_dict_og = get_idf_dict(references)
-#     scores = word_mover_score(references, hypotheses, idf_dict_og, idf_dict_pred, \
-#                             stop_words=[], n_gram=1, remove_subwords=True)
-#     return scores
-    
+def corpus_level_ser(original_data: List[str], model_inputs_and_outputs: List[Tuple[str, str, List[str]]], dataset_name: str) -> Tuple[float]:
+    """_summary_
+
+    Args:
+        original_data (List[str]): _description_
+        model_inputs_and_outputs (List[Tuple[str, str, List[str]]]): _description_
+        dataset_name (str): _description_
+
+    Returns:
+        Tuple[float]: SER, # wrong slots, UER, # wrong utterances/sentences
+    """
+    generated_sentences = [generated[0] for _, _, generated in model_inputs_and_outputs]
+    return ser_calculator.calculate_ser(original_data, generated_sentences, dataset_name, output_uer=True)
+
+
+def create_metrics_compendium(
+                        model_inputs_and_outputs: List[Tuple[str, str, List[str]]], 
+                        precomputed_ser: Tuple[float] = None,
+                        precomputed_bleu: float = None,
+                        original_data: List[str] = None,
+                        dataset_name: str = None
+                    ) -> Dict:
+    """_summary_
+
+    Args:
+        model_inputs_and_outputs (List[Tuple[str, str, List[str]]]): _description_
+        precomputed_bleu (float): _description_
+        precomputed_ser (Tuple[float]): SER, # wrong slots, UER, # wrong utterances/sentences
+
+    Returns:
+        Dict: 
+    """
+    if precomputed_ser is None and (original_data is None or dataset_name is None):
+        raise ValueError("Cannot add SER to metrics compendium without either the precomputed SER or the data needed to compute it.")
+    metrics_compendium = {}
+    #* check SER
+    if precomputed_ser is None:
+        precomputed_ser = corpus_level_ser(original_data, model_inputs_and_outputs, dataset_name)
+    metrics_compendium["SER"] = precomputed_ser[0]
+    metrics_compendium["wrong_slots"] = precomputed_ser[1]
+    metrics_compendium["UER"] = precomputed_ser[2]
+    metrics_compendium["wrong_utterances"] = precomputed_ser[3]
+    #* check bleu
+    if precomputed_bleu is None:
+        precomputed_bleu = corpus_level_bleu(model_inputs_and_outputs)
+    metrics_compendium["BLEU"] = precomputed_bleu
+    #* check other metrics
+    rouge_score = corpus_level_rogue(model_inputs_and_outputs)
+    metrics_compendium["rouge"] = rouge_score
+    chrf_score = corpus_level_chrf(model_inputs_and_outputs)
+    metrics_compendium["chrf"] = chrf_score
+    ter_score = corpus_level_ter(model_inputs_and_outputs)
+    metrics_compendium["TER"] = ter_score
+    meteor_score = corpus_level_meteor(model_inputs_and_outputs)
+    metrics_compendium["meteor"] = meteor_score
+    return metrics_compendium

@@ -3,13 +3,8 @@ import math
 import re
 from typing import List, Union
 
-#! this is terrible but there is no other easy way
-import sys
-import os
-custom_dir_path = os.path.dirname(os.path.abspath(__file__))
-ser_dir_path = os.path.join(custom_dir_path, "libs", "data2text-nlp")
-sys.path.append(ser_dir_path)
-import ser_calculator
+import utils
+ser_calculator = utils.import_ser_calculator()
 
 
 import torch
@@ -224,6 +219,6 @@ def calculate_dcs(logits: torch.Tensor, original_data: List[str], tokenizer: Pre
     softmaxes = F.softmax(logits, dim=1)
     confidences, predictions = torch.max(softmaxes, -1)
     batch_sentences = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-    ser_value = ser_calculator.calculate_ser(original_data, batch_sentences, dataset_name)
+    ser_value, _ = ser_calculator.calculate_ser(original_data, batch_sentences, dataset_name)
     mean_conf = torch.mean(confidences)
     return torch.abs((1.0-ser_value) - mean_conf)

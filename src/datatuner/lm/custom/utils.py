@@ -1,4 +1,5 @@
 import random
+from typing import Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -65,3 +66,25 @@ def plot_grad_flow2(named_parameters, save_path: str, max_num_of_params: int = N
     plt.title("Gradient flow")
     plt.grid(True)
     plt.savefig(f"{save_path}.png")
+
+
+def import_ser_calculator():
+    #! this is terrible but there is no other easy way
+    import os
+    import sys
+    custom_dir_path = os.path.dirname(os.path.abspath(__file__))
+    ser_dir_path = os.path.join(custom_dir_path, "libs", "data2text-nlp")
+    sys.path.append(ser_dir_path)
+    import ser_calculator
+    return ser_calculator
+
+
+def format_metrics_compendium(metrics_compendium: Dict[str, float]) -> str:
+    ser = f"SER {(metrics_compendium['SER']*100):.3f}% ({metrics_compendium['wrong_slots']})"
+    uer = f"UER {(metrics_compendium['UER']*100):.3f}% ({metrics_compendium['wrong_sentences']})"
+    other_metrics = "\n".join([
+        f"{metric_name.capitalize()}: {metric_value:.3f}"
+        for metric_name, metric_value in metrics_compendium.items() 
+        if not any(metric_name.starts_with(name) for name in ["SER", "UER", "wrong_"])
+        ])
+    return f"{ser}\n{uer}\n{other_metrics}"
