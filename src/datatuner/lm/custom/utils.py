@@ -1,5 +1,5 @@
 import random
-from typing import Dict
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -80,11 +80,32 @@ def import_ser_calculator():
 
 
 def format_metrics_compendium(metrics_compendium: Dict[str, float]) -> str:
-    ser = f"SER {(metrics_compendium['SER']*100):.3f}% ({metrics_compendium['wrong_slots']})"
-    uer = f"UER {(metrics_compendium['UER']*100):.3f}% ({metrics_compendium['wrong_sentences']})"
+    ser = f"SER {(metrics_compendium['ser']*100):.3f}% ({metrics_compendium['wrong_slots']})"
+    uer = f"UER {(metrics_compendium['uer']*100):.3f}% ({metrics_compendium['wrong_utterances']})"
     other_metrics = "\n".join([
         f"{metric_name.capitalize()}: {metric_value:.3f}"
         for metric_name, metric_value in metrics_compendium.items() 
-        if not any(metric_name.starts_with(name) for name in ["SER", "UER", "wrong_"])
+        if not any(metric_name.startswith(name) for name in ["ser", "uer", "wrong_"])
         ])
     return f"{ser}\n{uer}\n{other_metrics}"
+
+
+def crop_sentences_tensor_to_eos_token(sentences_tensor: torch.Tensor, eos_token_id: int) -> List[int]:
+    """Crop all the tensor's sentences composed of tokens ids up to the first occurrence of the eos token id, 
+    if it is found. Otherwise, leave the whole sentence.
+
+    Args:
+        sentences_tensor (torch.Tensor)
+        eos_token_id (int)
+
+    Returns:
+        List[int]: list of cropped sentences
+    """
+    cropped_sentences = []
+    for pred in sentences_tensor.tolist():
+        try:
+            cropped_sentences.append(pred[:pred.index(eos_token_id)])
+        except ValueError:
+            cropped_sentences.append(pred)
+    return cropped_sentences
+

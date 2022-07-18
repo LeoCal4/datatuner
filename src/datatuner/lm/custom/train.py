@@ -188,23 +188,23 @@ def main():
                 progress_bar.update(batch_size)
                 loss_val = loss.item() # get the item since loss is a tensor
                 progress_bar.set_postfix(epoch=epoch, loss=loss_val)
-                if batch_num == 0 or batch_num % (batch_size*100) == 0:
-                    softmaxes = F.softmax(logits, dim=-1)
-                    predictions = torch.argmax(softmaxes, -1)
-                    new_pred = []
-                    for pred in predictions.tolist():
-                        if not pred:
-                            continue 
-                        try:
-                            new_pred.append(pred[:pred.index(tokenizer.eos_token_id)])
-                        except ValueError:
-                            new_pred.append(pred)
-                    sentences = tokenizer.batch_decode(new_pred, skip_special_tokens=False)
-                    del predictions
-                    source_data = '\n'.join(batch['source_data_values'][0:5])
-                    log.info(f"\nSource:\n{source_data}")
-                    generated = '\n'.join(sentences[0:5])
-                    log.info(f"\nGenerated:\n{generated}")
+                # if batch_num == 0 or batch_num % (batch_size*100) == 0:
+                #     softmaxes = F.softmax(logits, dim=-1)
+                #     predictions = torch.argmax(softmaxes, -1)
+                #     new_pred = []
+                #     for pred in predictions.tolist():
+                #         if not pred:
+                #             continue 
+                #         try:
+                #             new_pred.append(pred[:pred.index(tokenizer.eos_token_id)])
+                #         except ValueError:
+                #             new_pred.append(pred)
+                #     sentences = tokenizer.batch_decode(new_pred, skip_special_tokens=False)
+                #     del predictions
+                #     source_data = '\n'.join(batch['source_data_values'][0:5])
+                #     log.info(f"\nSource:\n{source_data}")
+                #     generated = '\n'.join(sentences[0:5])
+                #     log.info(f"\nGenerated:\n{generated}")
                 del logits
 
         #* evaluate
@@ -282,7 +282,7 @@ def main():
         json.dump(predictions, f, sort_keys=False, indent=4, ensure_ascii=False)
     #* calculate metrics
     metrics_compendium = metrics.create_metrics_compendium(
-        predictions,
+        best_predictions,
         precomputed_ser=last_ser_values,
         precomputed_bleu=last_avg_bleu
     )

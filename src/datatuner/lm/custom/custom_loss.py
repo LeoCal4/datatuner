@@ -12,7 +12,6 @@ import torch.nn.functional as F
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 
-
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__file__)
 
@@ -133,7 +132,7 @@ def semantic_fidelity_loss_with_confidences(source_data_ids: torch.Tensor, logit
         torch.Tensor
     """
     total_len_ratios = []
-    softmaxes = F.softmax(logits, dim=1)
+    softmaxes = F.softmax(logits, dim=-1)
     confidences, predictions = torch.max(softmaxes, -1)
     for data, predicted in zip(source_data_ids, predictions):
         source_intersect_predicted = tensor_intersection(data, predicted)
@@ -158,8 +157,9 @@ def word_based_semantic_fidelity_loss(
         torch.Tensor
     """
     total_len_ratios = []
-    softmaxes = F.softmax(logits, dim=1)
+    softmaxes = F.softmax(logits, dim=-1)
     _, predictions = torch.max(softmaxes, -1)
+    predictions = utils.crop_sentences_tensor_to_eos_token(predictions, tokenizer.eos_token_id)
     batch_sentences = tokenizer.batch_decode(predictions, skip_special_tokens=True)
     for data, target, predicted in zip(source_data_values, target_data, batch_sentences):
         #* get all the data values tokens, separating both different slots and slots where more values are separated by a comma
@@ -191,8 +191,9 @@ def word_based_semantic_fidelity_loss_with_confidences(
         torch.Tensor
     """
     total_len_ratios = []
-    softmaxes = F.softmax(logits, dim=1)
+    softmaxes = F.softmax(logits, dim=-1)
     confidences, predictions = torch.max(softmaxes, -1)
+    predictions = utils.crop_sentences_tensor_to_eos_token(predictions, tokenizer.eos_token_id)
     batch_sentences = tokenizer.batch_decode(predictions, skip_special_tokens=True)
     for data, target, predicted in zip(source_data_values, target_data, batch_sentences):
         #* get all the data values tokens, separating both different slots and slots where more values are separated by a comma
@@ -216,8 +217,9 @@ def word_based_semantic_fidelity_loss_with_confidences(
 
 
 def calculate_dcs(logits: torch.Tensor, original_data: List[str], tokenizer: PreTrainedTokenizer, dataset_name: str) -> torch.Tensor:
-    softmaxes = F.softmax(logits, dim=1)
+    softmaxes = F.softmax(logits, dim=-1)
     confidences, predictions = torch.max(softmaxes, -1)
+    predictions = utils.crop_sentences_tensor_to_eos_token(predictions, tokenizer.eos_token_id)
     batch_sentences = tokenizer.batch_decode(predictions, skip_special_tokens=True)
     ser_value, _ = ser_calculator.calculate_ser(original_data, batch_sentences, dataset_name)
     mean_conf = torch.mean(confidences)

@@ -1,11 +1,19 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
+import logging
+
+from regex import D
 
 import sacrebleu
 from datatuner.lm.custom.utils import import_ser_calculator
 from nltk.translate.meteor_score import meteor_score
 from rouge_metric import PyRouge
+from parent import parent
 
 ser_calculator = import_ser_calculator()
+
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__file__)
 
 
 def group_inputs_and_outputs_by_data(model_inputs_and_outputs: List[Tuple[str, str, List[str]]]) -> Tuple[List[List[str]], List[str]]:
@@ -60,12 +68,17 @@ def extract_refs_and_hyps_from_grouped_items_like_datatuner(grouped_items: Dict)
     return references, hypotheses
 
 
-def extract_refs_and_hyps_from_grouped_items(grouped_items: Dict, pad_originals_length: bool = False) -> Tuple[List[List[str]], List[str]]:
+def extract_refs_and_hyps_from_grouped_items(
+                                        grouped_items: Dict, 
+                                        pad_originals_length: bool = False,
+                                        return_data: bool = False
+                                    ) -> Union[Tuple[List[List[str]], List[str]], Tuple[List[List[str]], List[str], List[str]]]:
     """_summary_
 
     Args:
         grouped_items (Dict): _description_
         pad_originals_length (bool, optional): _description_. Defaults to False.
+        return_data (boo, optional): returns data too (needed for PARENT score)
 
     Returns:
         Tuple[List[List[str]], List[str]]: tuple of references with:
@@ -77,12 +90,16 @@ def extract_refs_and_hyps_from_grouped_items(grouped_items: Dict, pad_originals_
     max_num_of_refs = max([len(entry["original"]) for entry in grouped_items.values()])
     hypotheses = []
     references = []
-    for item in grouped_items.values():
+    processed_data = []
+    for data, item in grouped_items.items():
+        processed_data.append(data)
         hypotheses.append(item["prediction"])
         if pad_originals_length and len(item["original"]) < max_num_of_refs:
             item["original"].extend(["" for _ in range(max_num_of_refs - len(item["original"]))])
         references.append(item["original"])
-    return references, hypotheses
+    outputs = references, hypotheses
+    if return_data: outputs += processed_data
+    return outputs
 
 
 def corpus_level_bleu(model_inputs_and_outputs: List[Tuple[str, str, List[str]]]) -> float:
@@ -149,6 +166,18 @@ def corpus_level_rogue(model_inputs_and_outputs: List[Tuple[str, str, List[str]]
     return scores["rouge-l"]["f"]*100
 
 
+def corpus_level_parent(model_inputs_and_outputs: List[Tuple[str, str, List[str]]]) -> float:
+    grouped_items = group_inputs_and_outputs_by_data(model_inputs_and_outputs)
+    references, hypotheses, data = extract_refs_and_hyps_from_grouped_items(grouped_items, return_data=True)
+    _, _, f_score = parent(
+        hypotheses,
+        references,
+        data,
+        avg_results=True,
+    )
+    return f_score
+
+
 def corpus_level_ser(original_data: List[str], model_inputs_and_outputs: List[Tuple[str, str, List[str]]], dataset_name: str) -> Tuple[float]:
     """_summary_
 
@@ -170,12 +199,12 @@ def create_metrics_compendium(
                         precomputed_bleu: float = None,
                         original_data: List[str] = None,
                         dataset_name: str = None
-                    ) -> Dict:
+                    ) -> Dict[str, float]:
     """_summary_
 
     Args:
-        model_inputs_and_outputs (List[Tuple[str, str, List[str]]]): _description_
-        precomputed_bleu (float): _description_
+        model_inputs_and_outputs (List[Tuple[str, str, List[str]]]): 
+        precomputed_bleu (float): 
         precomputed_ser (Tuple[float]): SER, # wrong slots, UER, # wrong utterances/sentences
 
     Returns:
@@ -187,21 +216,22 @@ def create_metrics_compendium(
     #* check SER
     if precomputed_ser is None:
         precomputed_ser = corpus_level_ser(original_data, model_inputs_and_outputs, dataset_name)
-    metrics_compendium["SER"] = precomputed_ser[0]
+    metrics_compendium["ser"] = precomputed_ser[0]
     metrics_compendium["wrong_slots"] = precomputed_ser[1]
-    metrics_compendium["UER"] = precomputed_ser[2]
+    metrics_compendium["uer"] = precomputed_ser[2]
     metrics_compendium["wrong_utterances"] = precomputed_ser[3]
     #* check bleu
     if precomputed_bleu is None:
         precomputed_bleu = corpus_level_bleu(model_inputs_and_outputs)
-    metrics_compendium["BLEU"] = precomputed_bleu
+    metrics_compendium["bleu"] = precomputed_bleu
     #* check other metrics
     rouge_score = corpus_level_rogue(model_inputs_and_outputs)
     metrics_compendium["rouge"] = rouge_score
     chrf_score = corpus_level_chrf(model_inputs_and_outputs)
     metrics_compendium["chrf"] = chrf_score
     ter_score = corpus_level_ter(model_inputs_and_outputs)
-    metrics_compendium["TER"] = ter_score
+    metrics_compendium["ter"] = ter_score
     meteor_score = corpus_level_meteor(model_inputs_and_outputs)
     metrics_compendium["meteor"] = meteor_score
+    metrics_compendium["parent"] = corpus_level_parent(model_inputs_and_outputs)
     return metrics_compendium
