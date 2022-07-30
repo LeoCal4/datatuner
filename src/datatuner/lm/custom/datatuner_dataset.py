@@ -153,7 +153,7 @@ def process_data(data: str, dataset_name: str) -> str:
     sentence_separator = "."
     final_sentence = ""
     values = []
-    if dataset_name == "webnlg":
+    if "webnlg" in dataset_name:
         matches = re.findall(r"(<[\w\s]*>)\s*([^<;]*)(;)?", data)
         for match in matches:
             bracketed_key = match[0]
