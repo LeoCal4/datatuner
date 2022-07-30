@@ -147,7 +147,19 @@ def process_e2e_key(key: str) -> str:
     return key
 
 
-def process_data(data: str, dataset_name: str) -> str:
+def process_data(data: str, dataset_name: str) -> Tuple[str, str]:
+    """_summary_
+
+    Args:
+        data (str): _description_
+        dataset_name (str): _description_
+
+    Raises:
+        ValueError: _description_
+
+    Returns:
+        Tuple[str, str]: return the processed MR/data and its values
+    """
     key_value_separator = "="
     slots_separator = "|"
     sentence_separator = "."
@@ -182,6 +194,8 @@ def process_data(data: str, dataset_name: str) -> str:
             value = match[1].strip()
             values.append(value)
             final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {slots_separator} "
+    elif dataset_name == "jilda":
+        pass
     else:
         raise ValueError(f"No configuration for dataset with name {dataset_name}")
     return final_sentence[:-2] + sentence_separator, " | ".join(values) + " |"
