@@ -1,6 +1,9 @@
 import json
 
 TAGS_INDEX = 3
+SLOTS_SEPARATOR = "|"
+KEY_VALUE_SEPARATOR = "="
+DA_SEPARATOR = "."
 
 def create_jilda_d2t_dataset(dataset_path: str, translations_path: str):
     with open(dataset_path, "r", encoding="utf-8") as f:
@@ -8,6 +11,7 @@ def create_jilda_d2t_dataset(dataset_path: str, translations_path: str):
     with open(translations_path, "r", encoding="utf-8") as f:
         values_translations = json.load(f)
     dataset = []
+    duplicates = 0
     for tags in parsed_text:
         if not tags[TAGS_INDEX]:
             continue
@@ -34,15 +38,14 @@ def create_jilda_d2t_dataset(dataset_path: str, translations_path: str):
                 slot_value = values_translations[slot_value]
             if previous_dialogue_act == "" or previous_dialogue_act != current_dialogue_act: 
                 if previous_dialogue_act != "":
-                    input_data += "), "
-                input_data += f"<{current_dialogue_act}> {current_dialogue_act.replace('_', ' ')} (<{slot_name}> {slot_name.replace('_', ' ')}: {slot_value}"
+                    # input_data += "), "
+                    input_data += f" {DA_SEPARATOR} "
+                input_data += f"<{current_dialogue_act}> {current_dialogue_act.replace('_', ' ')} {SLOTS_SEPARATOR} <{slot_name}> {slot_name.replace('_', ' ')} {KEY_VALUE_SEPARATOR} {slot_value}"
             elif previous_dialogue_act == current_dialogue_act:
-                input_data += f", <{slot_name}> {slot_name.replace('_', ' ')}: {slot_value}"
+                input_data += f" {SLOTS_SEPARATOR} <{slot_name}> {slot_name.replace('_', ' ')} {KEY_VALUE_SEPARATOR} {slot_value}"
             else:
                 raise ValueError("This should not happen")
             previous_dialogue_act = current_dialogue_act
-        input_data += ")"
-        input_data = '"' + input_data + '"'
         current_text = ""
         for text_token in tags[0]:
             #* do not add space before punctuation
@@ -50,12 +53,14 @@ def create_jilda_d2t_dataset(dataset_path: str, translations_path: str):
                 current_text += text_token
             else:
                 current_text += " " + text_token
-        current_text = '"' + current_text.strip() + '"'
-        dataset.append(f"{input_data}, {current_text}\n")
-    with open("jilda_datatuner_test.csv", "w", encoding="utf-8") as f:
-        f.write("mr,ref\n")
-        f.writelines(dataset)
-
+        new_entry = {"mr": input_data.strip(), "ref": current_text.strip()}
+        if new_entry in dataset:
+            duplicates += 1
+            continue
+        dataset.append(new_entry)
+    print(f"Writing dataset with {len(dataset)} entries, removed {duplicates} duplicates")
+    with open("jilda_datatuner_partition.json", "w", encoding="utf-8") as f:
+        json.dump(dataset, f, indent=4, sort_keys=False, ensure_ascii=False)
 
 
 def jilda_dataset_analysis(dataset_path: str):

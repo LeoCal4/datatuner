@@ -3,7 +3,6 @@ import json
 import logging
 import os
 from copy import deepcopy
-from statistics import mode
 from typing import *
 
 import numpy as np
@@ -16,7 +15,8 @@ from datatuner.lm.custom import utils
 from tqdm import tqdm
 from transformers import (GPT2Tokenizer, OPTForCausalLM,
                           T5ForConditionalGeneration, T5Tokenizer,
-                          get_linear_schedule_with_warmup)
+                          get_linear_schedule_with_warmup, 
+                          AutoModelForSeq2SeqLM, AutoTokenizer)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -46,7 +46,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
     parser.add_argument("--ser_early_stopping", action="store_true", help="Early stopping based on SER instead of BLEU.")
-    parser.add_argument("--patience", default=None, type=int, help="Patience for early stopping.")
+    parser.add_argument("--text_prefix", type=str, default="from English to Data:", help="The text prefix to prepend to every input sentence.")
     #* ==== SF loss ====
     parser.add_argument("--use_sf_loss", action="store_true", help="Whether to use the semantic fidelity loss or not.")
     parser.add_argument("--sf_loss_alpha", type=float, default=0.0, help="The weight for the semantic fidelity loss.")
@@ -73,16 +73,20 @@ def main():
 
     #* load model and tokenizer
     log.info(f"Loading model and tokenizer")
-    if "t5" in args.model_name:
+    if "it5" in args.model_name:
+        model_name = f"gsarti/{args.model_name}"
+        base_model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, model_max_length=512)
+    elif "t5" in args.model_name:
         if not args.use_custom_forward:
             base_model = T5ForConditionalGeneration.from_pretrained(args.model_name)
         else:
             log.info("\tUsing custom generate-like forward")
             base_model = GenForwardT5Model.from_pretrained(args.model_name)
         tokenizer = T5Tokenizer.from_pretrained(args.model_name, model_max_length=512)
-    elif "opt" in args.model_name:
-        base_model = OPTForCausalLM.from_pretrained(args.model_name)
-        tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
+    # elif "opt" in args.model_name:
+        # base_model = OPTForCausalLM.from_pretrained(args.model_name)
+        # tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
 
     #* check and eventually update special_tokens_path
     if not args.special_tokens_path:
@@ -99,15 +103,16 @@ def main():
     if not args.model_type:
         if "t5" in args.model_name:
             model_type = "enc_dec"
-        elif "opt" in args.model_name:
-            model_type = "dec_only"
+        # elif "opt" in args.model_name:
+        #     model_type = "dec_only"
     else:
         model_type = args.model_type
 
     #* load dataset as DataLoaders
     log.info(f"Loading dataset from {args.base_dataset_path}")
     train_loader, val_loader = datatuner_dataset.get_data_loaders(
-        args.base_dataset_path, task_config, tokenizer, model_type,
+        args.base_dataset_path, task_config, tokenizer,  model_type=model_type,
+        text_prefix=args.text_prefix,
         batch_sizes={"train": args.train_batch_size, "validation": args.val_batch_size},
         consistency_dataset_path=args.consistency_dataset_path)
     log.info(f"Train size: {len(train_loader)} - Val size: {len(val_loader)}")

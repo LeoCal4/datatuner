@@ -80,14 +80,6 @@ def get_datatuner_processed_dataset(filename: str, task_config: Dict) -> List[Di
         #*  the first one is always the data, the second is the sentence 
         for i, text_field in enumerate(text_fields):
             item[NEW_TEXT_FIELD_NAMES[i]] = raw_data_point[text_field["id"]]
-        #     if NEW_TEXT_FIELD_NAMES[i] == "data":
-        #         item[NEW_TEXT_FIELD_NAMES[i]] = remove_non_bracketed_keys(item[NEW_TEXT_FIELD_NAMES[i]])
-        # if item[NEW_TEXT_FIELD_NAMES[0]] == "":
-        #     continue
-        #* add any needed extra_field
-        # if "extra_fields" in task_config: # found in webnlg
-        #     for extra_field in task_config["extra_fields"]:
-        #         item[extra_field] = raw_data_point[extra_field]
         
         if "original_data" in task_config:
             item["original_data"] = raw_data_point[original_data_key_name]
@@ -194,8 +186,12 @@ def process_data(data: str, dataset_name: str) -> Tuple[str, str]:
             value = match[1].strip()
             values.append(value)
             final_sentence += f"{bracketed_key} {key} {key_value_separator} {value} {slots_separator} "
-    elif dataset_name == "jilda":
-        pass
+    elif "jilda" in dataset_name:
+        #* jilda's sentences are already well formatted, so we just need to extract the data values
+        matches = re.findall(r"[\w\s]*=([^\|\.]*)", data)
+        for match in matches:
+            values.append(match[0].strip())
+        final_sentence = data + "--" # adding 2 dashes since they get removed eventually
     else:
         raise ValueError(f"No configuration for dataset with name {dataset_name}")
     return final_sentence[:-2] + sentence_separator, " | ".join(values) + " |"
@@ -205,6 +201,7 @@ class DatatunerDataset(Dataset):
     def __init__(self, raw_dataset: List[Dict], tokenizer: PreTrainedTokenizer, 
             dataset_name: str, dataset_type: str = None,
             data_special_token: str = "data", text_special_token: str = "text",
+            text_prefix: str = "from Data to English:",
             max_source_len: int = None, max_target_len: int = None,
             raw_consistency_dataset: List[Dict[str, str]] = None,
             max_consistency_sentences: int = 3) -> None:
@@ -214,10 +211,12 @@ class DatatunerDataset(Dataset):
         self.dataset_type = dataset_type
         self.data_special_token = data_special_token
         self.text_special_token = text_special_token
+        self.text_prefix = text_prefix
         self.max_source_len = max_source_len
         self.source_padding_strategy = "max_length" if self.max_source_len else "longest"
         self.max_target_len = max_target_len
         self.target_padding_strategy = "max_length" if self.max_target_len else "longest"
+        log.info(f"\tDataset {dataset_name} padded with source: {self.source_padding_strategy} - target: {self.target_padding_strategy}")
         self.processed_sources = []
         self.processed_targets = []
         self.process_raw_dataset()
@@ -255,7 +254,10 @@ class DatatunerDataset(Dataset):
 
     def __getitem__(self, idx) -> Tuple[Dict]:
         item = {}
-        item["original_data"] = self.raw_dataset[idx]["original_data"]
+        if "original_data" in self.raw_dataset[idx]:
+            item["original_data"] = self.raw_dataset[idx]["original_data"]
+        else:
+            item["original_data"] = self.raw_dataset[idx]["data"]
         item["processed_data"] = self.raw_dataset[idx]["data"]
         item["target_text"] = self.raw_dataset[idx]["text"]
         if type(item["target_text"]) in (list, tuple):
@@ -285,7 +287,6 @@ class DatatunerDatasetEncDec(DatatunerDataset):
         total_sources = []
         total_targets = []
         total_source_values = []
-        prefix = "from Data to English:"
         for i, entry in enumerate(self.raw_dataset):
             # these tokenizer settings are taken from https://huggingface.co/docs/transformers/v4.18.0/en/model_doc/t5#inference
             # self.tokenizer.padding_size = "left"
@@ -293,7 +294,7 @@ class DatatunerDatasetEncDec(DatatunerDataset):
             processed_data, values = process_data(entry["data"], self.dataset_name)
             total_source_values.append(values)
             #* substitute with new raw data
-            source_string = f"{prefix} <{self.data_special_token}> {processed_data} <{self.text_special_token}>"
+            source_string = f"{self.text_prefix} <{self.data_special_token}> {processed_data} <{self.text_special_token}>"
             # source_string = f"{prefix} <{self.data_special_token}> {processed_data} <{self.text_special_token}>"
             self.raw_dataset[i]["data"] = source_string
             total_sources.append(source_string)
@@ -323,13 +324,11 @@ class DatatunerDatasetDecOnly(DatatunerDataset):
         total_sources = []
         total_targets = []
         total_source_values = []
-        prefix = "from Data to English:"
         for i, entry in enumerate(self.raw_dataset):
             processed_data, values = process_data(entry["data"], self.dataset_name)
             total_source_values.append(values)
             if "train" in self.dataset_type:
                 #* build and tokenize the source string (data token + data + text token + text) ([-1] is needed to take the correct sentence)
-                # TODO try prepending prefix
                 source_string = f"<{self.data_special_token}> {processed_data} <{self.text_special_token}> {entry['text'][-1]}"
                 source_string = self.tokenizer(source_string)["input_ids"]
                 total_sources.append(source_string[1:]) #! <- this leaves out the starting EOS token from GPT2/OPT, since it will be readded later
@@ -386,7 +385,7 @@ class DatatunerDatasetDecOnly(DatatunerDataset):
 
 
 def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTrainedTokenizer,
-        model_type: str = "enc_dec",
+        text_prefix: str = "", model_type: str = "enc_dec",
         dataset_types: List[str] = ["train", "validation"], 
         batch_sizes: Dict[str, int] = {"train": 8, "validation": 8},
         max_source_len: int = None, max_target_len: int = None,
@@ -404,10 +403,12 @@ def get_data_loaders(base_dataset_path: str, task_config: Dict, tokenizer: PreTr
             raw_consistency_dataset = get_consistency_dataset(current_consistency_dataset_path)
         if model_type == "enc_dec":
             current_dataset = DatatunerDatasetEncDec(raw_dataset, tokenizer, dataset_name,
+                text_prefix=text_prefix,
                 max_source_len=max_source_len, max_target_len=max_target_len, 
                 raw_consistency_dataset=raw_consistency_dataset)
         elif model_type == "dec_only":
             current_dataset = DatatunerDatasetDecOnly(raw_dataset, tokenizer, dataset_name, dataset_type=dataset_type,
+                text_prefix=text_prefix,
                 max_source_len=max_source_len, max_target_len=max_target_len, 
                 raw_consistency_dataset=raw_consistency_dataset)
         else:
