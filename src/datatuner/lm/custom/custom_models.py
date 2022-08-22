@@ -31,7 +31,7 @@ class DatatunerModel(nn.Module):
         if self.use_sf_loss:
             log.info(f"\n\tUsing semantic fidelity loss with confidences")
             self.sf_loss_alpha = sf_loss_alpha
-            log.info(f"\n\tLoss: (1-{self.sf_loss_alpha})*CE + {self.sf_loss_alpha}*SFC")
+            log.info(f"\n\tLoss: CE + {self.sf_loss_alpha}*SFC")
         self.use_dcs_loss = use_dcs_loss
         if self.use_dcs_loss:
             log.info(f"\n\tUsing DCS agumented loss with beta = {dcs_beta}")
@@ -108,7 +108,7 @@ class DatatunerModel(nn.Module):
                 logits,
                 self.tokenizer
             )
-            loss = (1 - self.sf_loss_alpha) * loss + self.sf_loss_alpha * sf_loss
+            loss = loss + self.sf_loss_alpha * sf_loss
         elif self.use_dcs_loss:
             dcs = custom_loss.calculate_dcs(
                 logits,

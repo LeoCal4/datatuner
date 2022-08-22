@@ -1,8 +1,6 @@
 from typing import Dict, List, Tuple, Union
 import logging
 
-from regex import D
-
 import sacrebleu
 from datatuner.lm.custom.utils import import_ser_calculator
 from nltk.translate.meteor_score import meteor_score
@@ -98,7 +96,7 @@ def extract_refs_and_hyps_from_grouped_items(
             item["original"].extend(["" for _ in range(max_num_of_refs - len(item["original"]))])
         references.append(item["original"])
     outputs = references, hypotheses
-    if return_data: outputs += processed_data
+    if return_data: outputs = references, hypotheses, processed_data
     return outputs
 
 
@@ -233,5 +231,5 @@ def create_metrics_compendium(
     metrics_compendium["ter"] = ter_score
     meteor_score = corpus_level_meteor(model_inputs_and_outputs)
     metrics_compendium["meteor"] = meteor_score
-    metrics_compendium["parent"] = corpus_level_parent(model_inputs_and_outputs)
+    # metrics_compendium["parent"] = corpus_level_parent(model_inputs_and_outputs)
     return metrics_compendium
