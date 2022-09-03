@@ -102,13 +102,20 @@ class DatatunerModel(nn.Module):
                 batch["target_input_ids"].to(device=self.device, dtype=torch.long)
             )
         elif self.use_sf_loss:
-            sf_loss = custom_loss.word_based_semantic_fidelity_loss_with_confidences(
+            # sf_loss = custom_loss.word_based_semantic_fidelity_loss_with_confidences(
+            #     batch["source_data_values"],
+            #     batch["target_text"],
+            #     logits,
+            #     self.tokenizer
+            # )
+            # loss = loss + self.sf_loss_alpha * sf_loss
+            dir_loss = custom_loss.calculate_dir(
                 batch["source_data_values"],
                 batch["target_text"],
                 logits,
                 self.tokenizer
             )
-            loss = loss + self.sf_loss_alpha * sf_loss
+            loss = loss + self.sf_loss_alpha * dir_loss
         elif self.use_dcs_loss:
             dcs = custom_loss.calculate_dcs(
                 logits,

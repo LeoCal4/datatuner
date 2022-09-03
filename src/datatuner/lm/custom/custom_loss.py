@@ -184,7 +184,7 @@ def word_based_semantic_fidelity_loss_with_confidences(
     logits: torch.Tensor, 
     tokenizer: PreTrainedTokenizer) -> torch.Tensor:
     """SM loss which calculates the following:
-        log 1/N SUM_i (conf_i * | intersection(tags, target) | / | intersection(tags, predicted) |)
+        1/N SUM_i (conf_i * | intersection(tags, target) | / | intersection(tags, predicted) |)
     using the natural language version of tags, target and predicted to get their intersection.
 
     Returns:
@@ -200,7 +200,7 @@ def word_based_semantic_fidelity_loss_with_confidences(
         data_tokens = list(re.findall(r"\s?([^|,]*)[|,]", data))
         #* strip tokens and avoid getting "yes" and "no", as they don't provide anything
         data_tokens = [token.strip() for token in data_tokens if token.strip() not in ["yes", "no"]]
-        data_tokens_in_target = 0.1 # avoids 0 division
+        data_tokens_in_target = 0.0 # avoids 0 division
         for data_token in data_tokens:
             data_tokens_in_target += int(data_token in target)
         data_tokens_in_pred = 0.1 # avoids 0 division
@@ -224,3 +224,45 @@ def calculate_dcs(logits: torch.Tensor, original_data: List[str], tokenizer: Pre
     ser_value, _ = ser_calculator.calculate_ser(original_data, batch_sentences, dataset_name)
     mean_conf = torch.mean(confidences)
     return torch.abs((1.0-ser_value) - mean_conf)
+
+
+def calculate_dir(
+        source_data_values: List[str], 
+        target_data: List[str], 
+        logits: torch.Tensor, 
+        tokenizer: PreTrainedTokenizer) -> torch.Tensor:
+    """DIR (Data Intersection Rate) loss which calculates the following:
+        1/N SUM_i | conf_i - max(intersection(tags, predicted) | / | intersection(tags, target), 1) |
+    using the natural language version of tags, target and predicted to get their intersection.
+
+    Returns:
+        torch.Tensor
+    """
+    total_len_ratios = []
+    softmaxes = F.softmax(logits, dim=-1)
+    confidences, predictions = torch.max(softmaxes, -1)
+    predictions = utils.crop_sentences_tensor_to_eos_token(predictions, tokenizer.eos_token_id)
+    batch_sentences = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    for data, target, predicted in zip(source_data_values, target_data, batch_sentences):
+        data = data.lower()
+        target = target.lower()
+        predicted = predicted.lower()
+        #* get all the data values tokens, separating both different slots and slots where more values are separated by a comma
+        data_tokens = list(re.findall(r"\s?([^|,]*)[|,]", data))
+        #* strip tokens and avoid getting "yes" and "no", as they don't provide anything
+        data_tokens = [token.strip() for token in data_tokens if token.strip() not in ["yes", "no"]]
+        data_tokens_in_target = 0.0
+        for data_token in data_tokens:
+            data_tokens_in_target += int(data_token in target)
+        data_tokens_in_pred = 0.0 # added to nominator to get 1 when they are both 0.1 instead of getting 0
+        for data_token in data_tokens:
+            data_tokens_in_pred += int(data_token in predicted)
+        if data_tokens_in_target == 0.0: # avoids 0 division, manually set the len_ratio to 1
+            len_ratio = 1.0
+        else:
+            len_ratio = min(data_tokens_in_pred / data_tokens_in_target, 1.0)
+        total_len_ratios.append(len_ratio)
+    mean_conf = torch.mean(confidences)
+    mean_ratios = sum(total_len_ratios) / len(total_len_ratios)
+    dir_loss = torch.abs(mean_ratios - mean_conf)
+    return dir_loss
